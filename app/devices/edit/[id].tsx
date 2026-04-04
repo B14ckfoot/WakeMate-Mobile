@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Save } from 'lucide-react-native';
-import { Device } from '../../types/device';
+import { Device } from '../../../src/types/device';
 import deviceService from '../../services/deviceService';
 
 export default function EditDeviceScreen() {

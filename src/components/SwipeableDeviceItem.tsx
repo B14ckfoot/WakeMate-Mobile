@@ -1,6 +1,11 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
-import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
+import {
+  GestureHandlerRootView,
+  PanGestureHandler,
+  State,
+  PanGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 import { Device } from '../../src/types/device';
 import { Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
@@ -18,13 +23,24 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
 }) => {
   const router = useRouter();
   const translateX = useRef(new Animated.Value(0)).current;
+  const translateXValue = useRef(0);
+
+  useEffect(() => {
+    const listenerId = translateX.addListener(({ value }) => {
+      translateXValue.current = value;
+    });
+
+    return () => {
+      translateX.removeListener(listenerId);
+    };
+  }, [translateX]);
 
   const gestureHandler = Animated.event(
     [{ nativeEvent: { translationX: translateX } }],
     { useNativeDriver: true }
   );
 
-  const onHandlerStateChange = ({ nativeEvent }: any) => {
+  const onHandlerStateChange = ({ nativeEvent }: PanGestureHandlerStateChangeEvent) => {
     if (nativeEvent.oldState === State.ACTIVE) {
       // Check if swipe was enough to trigger delete button reveal
       const dragX = nativeEvent.translationX;
@@ -51,7 +67,7 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
 
   const handlePress = () => {
     // Only navigate if the card isn't swiped open
-    const currentValue = translateX.__getValue();
+    const currentValue = translateXValue.current;
     if (currentValue === 0) {
       router.push(`/devices/${device.id}`);
     } else {

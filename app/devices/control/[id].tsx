@@ -13,7 +13,12 @@ import {
 } from 'react-native';
 import { ArrowLeft, MousePointer, Keyboard as KeyboardIcon, Music, Power, Moon, RefreshCw, LogOut, Settings } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
+import {
+  GestureHandlerRootView,
+  PanGestureHandler,
+  State,
+  PanGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 import { Device } from '../../../src/types/device';
 import deviceService from '../../../src/services/deviceService';
 
@@ -106,7 +111,7 @@ export default function DeviceControlScreen() {
     { useNativeDriver: true }
   );
 
-  const onHandlerStateChange = (event) => {
+  const onHandlerStateChange = (event: PanGestureHandlerStateChangeEvent) => {
     if (event.nativeEvent.oldState === State.ACTIVE) {
       // Send mouse movement to device
       const dx = event.nativeEvent.translationX;

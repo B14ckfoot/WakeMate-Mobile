@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
-import { Device, DeviceCommand } from '../types/device';
+import { Device } from '../../src/types/device';
 
 export const deviceService = {
   async getServerAddress(): Promise<string | null> {

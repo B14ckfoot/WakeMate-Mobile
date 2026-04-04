@@ -19,7 +19,13 @@ import {
   Play,
   Pause
 } from 'lucide-react-native';
-import { GestureHandlerRootView, PanGestureHandler, State } from 'react-native-gesture-handler';
+import {
+  GestureHandlerRootView,
+  PanGestureHandler,
+  State,
+  PanGestureHandlerGestureEvent,
+  PanGestureHandlerStateChangeEvent,
+} from 'react-native-gesture-handler';
 
 const MouseKeyboardScreen: React.FC = () => {
   const params = useLocalSearchParams();
@@ -45,12 +51,12 @@ const MouseKeyboardScreen: React.FC = () => {
   { useNativeDriver: true }
 );
 
-  const onHandlerStateChange = (event) => {
-  if (event.nativeEvent.oldState === State.ACTIVE) {
-    // Handle state change
-    // ...
-  }
-};
+  const onHandlerStateChange = (event: PanGestureHandlerStateChangeEvent) => {
+    if (event.nativeEvent.oldState === State.ACTIVE) {
+      // Handle state change
+      // ...
+    }
+  };
   // Toggle panels
   const toggleKeyboard = () => {
     if (activePanel !== 'keyboard') {
@@ -125,13 +131,13 @@ const MouseKeyboardScreen: React.FC = () => {
       {/* Touch Pad */}
       <GestureHandlerRootView style={styles.touchPadContainer}>
         <PanGestureHandler
-          onGestureEvent={(e) => {
+          onGestureEvent={(event: PanGestureHandlerGestureEvent) => {
             // Handle pan gesture
-            console.log('Pan gesture:', e.nativeEvent);
+            console.log('Pan gesture:', event.nativeEvent);
           }}
-          onHandlerStateChange={(e) => {
+          onHandlerStateChange={(event: PanGestureHandlerStateChangeEvent) => {
             // Handle state change
-            console.log('State change:', e.nativeEvent);
+            console.log('State change:', event.nativeEvent);
           }}
         >
           <Animated.View style={styles.touchPad}>

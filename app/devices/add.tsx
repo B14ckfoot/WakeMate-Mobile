@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { ArrowLeft, Plus } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
-import { Device } from '../types/device';
+import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
 
 export default function AddDeviceScreen() {
