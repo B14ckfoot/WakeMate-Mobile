@@ -154,9 +154,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 12,
   },
   deviceInfo: {
     flex: 1,
+    paddingRight: 8,
   },
   deviceName: {
     color: '#ffffff',
@@ -167,10 +169,13 @@ const styles = StyleSheet.create({
   deviceIp: {
     color: '#a0a0a0',
     fontSize: 14,
+    lineHeight: 20,
   },
   statusContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 0,
+    maxWidth: '40%',
   },
   statusIndicator: {
     width: 10,
@@ -181,6 +186,7 @@ const styles = StyleSheet.create({
   statusText: {
     color: '#a0a0a0',
     fontSize: 14,
+    flexShrink: 1,
   },
   deleteButtonContainer: {
     position: 'absolute',

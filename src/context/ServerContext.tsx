@@ -1,15 +1,15 @@
-import React, { createContext, useState, useContext, useEffect, ReactNode } from 'react';
-import { Alert } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, useCallback, useEffect, useContext, useState, ReactNode } from 'react';
 import deviceService from '../services/deviceService';
 import { pingServer, testCommandEndpoint, runDiagnostics } from '../utils/serverStatusChecker';
 
 interface ServerContextType {
   serverIp: string;
   setServerIp: (ip: string) => void;
+  serverToken: string;
+  setServerToken: (token: string) => void;
   isConnected: boolean;
   connectionError: string | null;
-  testConnection: () => Promise<boolean>;
+  testConnection: (nextIp?: string, nextToken?: string) => Promise<boolean>;
   runServerDiagnostics: () => Promise<any>;
   lastStatus: 'success' | 'error' | 'pending' | null;
 }
@@ -22,171 +22,177 @@ interface ServerProviderProps {
 
 export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [serverIp, setServerIp] = useState<string>('');
+  const [serverToken, setServerToken] = useState<string>('');
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [lastStatus, setLastStatus] = useState<'success' | 'error' | 'pending' | null>(null);
-  
-  // Load server IP from storage on mount
+  const [isHydrated, setIsHydrated] = useState(false);
+
   useEffect(() => {
-    const loadServerIp = async () => {
+    const loadConnectionSettings = async () => {
       try {
-        const savedIp = await AsyncStorage.getItem('serverIp');
+        const [savedIp, savedToken] = await Promise.all([
+          deviceService.getServerAddress(),
+          deviceService.getServerToken(),
+        ]);
+
         if (savedIp) {
           setServerIp(savedIp);
-          deviceService.setServerAddress(savedIp);
+        }
+
+        if (savedToken) {
+          setServerToken(savedToken);
         }
       } catch (error) {
-        console.error('Error loading server IP:', error);
+        console.error('Error loading companion settings:', error);
+      } finally {
+        setIsHydrated(true);
       }
     };
-    
-    loadServerIp();
+
+    loadConnectionSettings();
   }, []);
-  
-  // Update the device service and localStorage when IP changes
-  useEffect(() => {
-    const updateServerIp = async () => {
-      if (serverIp) {
-        // Update in deviceService
-        deviceService.setServerAddress(serverIp);
-        
-        // Save to AsyncStorage
-        try {
-          await AsyncStorage.setItem('serverIp', serverIp);
-        } catch (error) {
-          console.error('Error saving server IP:', error);
-        }
-        
-        // Test the connection when IP changes
-        testConnection();
-      } else {
-        setIsConnected(false);
-        setConnectionError('Server IP not set');
-      }
-    };
-    
-    updateServerIp();
-  }, [serverIp]);
-  
-  // Function to test the connection to the server
-  const testConnection = async (): Promise<boolean> => {
-    if (!serverIp) {
+
+  const testConnection = useCallback(async (nextIp: string = serverIp, nextToken: string = serverToken): Promise<boolean> => {
+    const trimmedServerIp = nextIp.trim();
+    const trimmedServerToken = nextToken.trim();
+
+    if (!trimmedServerIp) {
       setConnectionError('Server IP not set');
       setIsConnected(false);
       setLastStatus('error');
       return false;
     }
-    
+
     setLastStatus('pending');
-    
+
     try {
       setConnectionError(null);
-      console.log('Testing connection to server...');
-      
-      // Try to ping the server first
-      const pingResult = await pingServer(serverIp);
-      
+
+      const pingResult = await pingServer(trimmedServerIp);
       if (!pingResult.success) {
         setIsConnected(false);
         setConnectionError(pingResult.message);
         setLastStatus('error');
         return false;
       }
-      
-      // If ping successful, test the command endpoint
-      const commandResult = await testCommandEndpoint(serverIp);
-      
-      if (commandResult.success) {
+
+      if (!trimmedServerToken) {
+        setIsConnected(true);
+        setConnectionError('Companion reachable. Add the pairing token from wakemate.config.json to enable commands.');
+        setLastStatus('success');
+        return true;
+      }
+
+      const pairingResult = await testCommandEndpoint(trimmedServerIp, trimmedServerToken);
+      if (pairingResult.success) {
         setIsConnected(true);
         setConnectionError(null);
         setLastStatus('success');
         return true;
-      } else {
-        setIsConnected(false);
-        setConnectionError(`Server responded but command endpoint failed: ${commandResult.message}`);
-        setLastStatus('error');
-        return false;
       }
+
+      setIsConnected(false);
+      setConnectionError(`Companion reachable, but pairing failed: ${pairingResult.message}`);
+      setLastStatus('error');
+      return false;
     } catch (error) {
       console.error('Connection test failed:', error);
       setIsConnected(false);
       setLastStatus('error');
-      
-      // Provide a more specific error message based on the error
+
       if (error instanceof Error) {
         if (error.message.includes('Network Error') || error.message.includes('Failed to fetch')) {
-          setConnectionError('Network error: Unable to reach the server. Make sure the server is running.');
-        } else if (error.message.includes('404')) {
-          setConnectionError('Server found but API endpoint not available');
-        } else if (error.message.includes('ECONNREFUSED')) {
-          setConnectionError('Connection refused: Check if server is running');
+          setConnectionError('Network error: Unable to reach the companion. Make sure it is running.');
         } else {
           setConnectionError(`Failed to connect: ${error.message}`);
         }
       } else {
-        setConnectionError('Failed to connect to server');
+        setConnectionError('Failed to connect to companion');
       }
-      
+
       return false;
     }
-  };
-  
-  // Function to run comprehensive server diagnostics
+  }, [serverIp, serverToken]);
+
+  useEffect(() => {
+    const syncConnectionSettings = async () => {
+      if (!isHydrated) {
+        return;
+      }
+
+      try {
+        await Promise.all([
+          deviceService.setServerAddress(serverIp),
+          deviceService.setServerToken(serverToken),
+        ]);
+      } catch (error) {
+        console.error('Error saving companion settings:', error);
+      }
+
+      if (!serverIp) {
+        setIsConnected(false);
+        setConnectionError('Server IP not set');
+        setLastStatus(serverToken ? 'error' : null);
+        return;
+      }
+
+      await testConnection(serverIp, serverToken);
+    };
+
+    syncConnectionSettings();
+  }, [isHydrated, serverIp, serverToken, testConnection]);
+
   const runServerDiagnostics = async (): Promise<any> => {
     if (!serverIp) {
       return {
         overall: false,
-        message: 'Server IP not set'
+        message: 'Server IP not set',
       };
     }
-    
+
     try {
-      const results = await runDiagnostics(serverIp);
-      
-      // Update connection status based on diagnostics
+      const results = await runDiagnostics(serverIp, serverToken || undefined);
       setIsConnected(results.overall);
-      
+
       if (!results.overall) {
-        // Find the first failed step for error message
-        const failedStep = results.steps.find(step => !step.success);
-        if (failedStep) {
-          setConnectionError(failedStep.message);
-        } else {
-          setConnectionError('Diagnostics failed but no specific error found');
-        }
+        const failedStep = results.steps.find((step) => !step.success);
+        setConnectionError(failedStep ? failedStep.message : 'Diagnostics failed');
       } else {
         setConnectionError(null);
       }
-      
+
       return results;
     } catch (error) {
       console.error('Diagnostics failed:', error);
       setIsConnected(false);
-      
+
       if (error instanceof Error) {
         setConnectionError(`Diagnostics failed: ${error.message}`);
       } else {
         setConnectionError('Diagnostics failed with unknown error');
       }
-      
+
       return {
         overall: false,
         message: error instanceof Error ? error.message : 'Unknown error',
-        steps: []
+        steps: [],
       };
     }
   };
-  
+
   return (
-    <ServerContext.Provider 
-      value={{ 
-        serverIp, 
-        setServerIp, 
-        isConnected, 
-        connectionError, 
+    <ServerContext.Provider
+      value={{
+        serverIp,
+        setServerIp,
+        serverToken,
+        setServerToken,
+        isConnected,
+        connectionError,
         testConnection,
         runServerDiagnostics,
-        lastStatus
+        lastStatus,
       }}
     >
       {children}
@@ -194,7 +200,6 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   );
 };
 
-// Custom hook to use the server context
 export const useServer = (): ServerContextType => {
   const context = useContext(ServerContext);
   if (context === undefined) {

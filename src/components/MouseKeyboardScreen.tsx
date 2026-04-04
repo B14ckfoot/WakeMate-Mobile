@@ -8,7 +8,7 @@ import {
   TextInput,
   ScrollView
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import {
   MousePointer,
   Volume2,
@@ -22,41 +22,21 @@ import {
 import {
   GestureHandlerRootView,
   PanGestureHandler,
-  State,
   PanGestureHandlerGestureEvent,
   PanGestureHandlerStateChangeEvent,
 } from 'react-native-gesture-handler';
 
 const MouseKeyboardScreen: React.FC = () => {
-  const params = useLocalSearchParams();
-  const id = params.id as string;
+  useLocalSearchParams();
   const [activePanel, setActivePanel] = useState<'mouse' | 'keyboard' | 'media'>('mouse');
   const [text, setText] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isScrolling, setIsScrolling] = useState(false);
-  
-  // Animated values for gesture tracking
-  const pan = useRef(new Animated.Value(0)).current;
+  const isScrolling = false;
   
   // Animation for keyboard panel
   const keyboardHeight = useRef(new Animated.Value(0)).current;
   const mediaHeight = useRef(new Animated.Value(0)).current;
   
-  // Configure pan responder for touchpad
-  const panX = useRef(new Animated.Value(0)).current;
-  const panY = useRef(new Animated.Value(0)).current;
-
-  const onGestureEvent = Animated.event(
-  [{ nativeEvent: { translationX: panX, translationY: panY } }],
-  { useNativeDriver: true }
-);
-
-  const onHandlerStateChange = (event: PanGestureHandlerStateChangeEvent) => {
-    if (event.nativeEvent.oldState === State.ACTIVE) {
-      // Handle state change
-      // ...
-    }
-  };
   // Toggle panels
   const toggleKeyboard = () => {
     if (activePanel !== 'keyboard') {

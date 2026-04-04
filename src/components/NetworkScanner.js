@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useEnhancedAutoDiscoverServer } from '../hooks/useEnhancedAutoDiscoverServer';
+import { useEnhancedAutoDiscoverServer } from '../hooks/useAutoDiscoverServer';
 
 const NetworkScanner = ({ onServerFound }) => {
   const { 
@@ -89,7 +89,7 @@ const NetworkScanner = ({ onServerFound }) => {
           <View style={styles.errorList}>
             <Text style={styles.errorListItem}>• The server application is running on your computer</Text>
             <Text style={styles.errorListItem}>• Your computer and phone are connected to the same network</Text>
-            <Text style={styles.errorListItem}>• Firewall settings aren't blocking port 7777</Text>
+            <Text style={styles.errorListItem}>• Firewall settings are not blocking port 7777</Text>
           </View>
         </View>
       )}

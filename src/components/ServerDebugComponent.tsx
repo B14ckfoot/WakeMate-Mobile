@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
 interface ServerDebugProps {
   serverIp: string | null;
@@ -180,7 +180,7 @@ const ServerDebugComponent: React.FC<ServerDebugProps> = ({ serverIp }) => {
         <ul className="text-xs list-disc pl-5 space-y-1">
           <li>Verify server is running and reachable from the device</li>
           <li>Check that your device and server are on the same network</li>
-          <li>Ensure port 7777 is open on your server's firewall</li>
+          <li>Ensure port 7777 is open on your server firewall</li>
           <li>Try restarting both your app and server</li>
           <li>Check server logs for any errors</li>
         </ul>

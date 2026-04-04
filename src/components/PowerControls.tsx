@@ -9,7 +9,7 @@ export default function PowerControls({ device }: { device: Device }) {
   return (
     <View style={{ flexDirection: "row", gap: 24 }}>
       <TouchableOpacity
-        onPress={() => deviceService.wakeMachine(device.id, device.mac)}
+        onPress={() => deviceService.wakeMachine(device)}
         style={{ alignItems: "center" }}
       >
         <Zap size={32} />
@@ -17,16 +17,7 @@ export default function PowerControls({ device }: { device: Device }) {
       </TouchableOpacity>
 
       <TouchableOpacity
-        onPress={() =>
-          fetch(`http://${device.ip}:7777/command`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              type: "power",
-              action: "sleep",
-            }),
-          })
-        }
+        onPress={() => deviceService.sendSleep(device.id, device.ip)}
         style={{ alignItems: "center" }}
       >
         <Moon size={32} />
