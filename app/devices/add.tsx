@@ -343,6 +343,9 @@ export default function AddDeviceScreen() {
       keyboardVerticalOffset={insets.top + 12}
       style={styles.container}
     >
+      <View style={styles.glowOrbOne} />
+      <View style={styles.glowOrbTwo} />
+
       <View
         style={[
           styles.header,
@@ -356,7 +359,7 @@ export default function AddDeviceScreen() {
           onPress={() => router.back()}
           hitSlop={{ top: 12, right: 12, bottom: 12, left: 12 }}
         >
-          <ArrowLeft size={24} color="#7c3aed" />
+          <ArrowLeft size={24} color="#0891b2" />
         </TouchableOpacity>
       </View>
 
@@ -371,6 +374,7 @@ export default function AddDeviceScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.content}>
+          <Text style={styles.eyebrow}>WakeMATE Setup</Text>
           <Text style={styles.title}>Add New Device</Text>
           <Text style={styles.subtitle}>Save the device details once so waking and control work reliably.</Text>
 
@@ -405,7 +409,7 @@ export default function AddDeviceScreen() {
               value={name}
               onChangeText={setName}
               placeholder="My Computer"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               autoCorrect={false}
               returnKeyType="next"
             />
@@ -416,7 +420,7 @@ export default function AddDeviceScreen() {
               value={mac}
               onChangeText={setMac}
               placeholder="00:11:22:33:44:55"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               autoCapitalize="characters"
               autoCorrect={false}
             />
@@ -428,7 +432,7 @@ export default function AddDeviceScreen() {
               value={pingAddress}
               onChangeText={setPingAddress}
               placeholder="192.168.1.100"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="decimal-pad"
               autoCorrect={false}
             />
@@ -440,7 +444,7 @@ export default function AddDeviceScreen() {
               value={wakeAddress}
               onChangeText={setWakeAddress}
               placeholder={suggestedWakeAddress || '192.168.1.255'}
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="decimal-pad"
               autoCorrect={false}
             />
@@ -454,7 +458,7 @@ export default function AddDeviceScreen() {
               value={wakePort}
               onChangeText={setWakePort}
               placeholder={String(DEFAULT_WAKE_PORT)}
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="number-pad"
             />
             <Text style={styles.helperText}>Most devices use port 9, but some networks use 7 or 0.</Text>
@@ -483,12 +487,30 @@ export default function AddDeviceScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
+  },
+  glowOrbOne: {
+    position: 'absolute',
+    top: -120,
+    right: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34, 211, 238, 0.08)',
+  },
+  glowOrbTwo: {
+    position: 'absolute',
+    top: 240,
+    left: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8, 145, 178, 0.1)',
   },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 8,
-    backgroundColor: '#121212',
+    backgroundColor: 'transparent',
   },
   scrollContainer: {
     flexGrow: 1,
@@ -506,51 +528,70 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1d1d1d',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
+  },
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: '#67e8f9',
+    marginBottom: 8,
   },
   title: {
-    fontSize: 30,
-    fontWeight: '700',
-    color: '#ffffff',
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#f8fbff',
   },
   subtitle: {
     marginTop: 6,
     marginBottom: 18,
     fontSize: 15,
     lineHeight: 22,
-    color: '#9ca3af',
+    color: '#8aa1ab',
   },
   scanCard: {
-    backgroundColor: '#201733',
-    borderRadius: 18,
-    padding: 16,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
+    padding: 18,
     marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#16313a',
+    shadowColor: '#22d3ee',
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: {
+      width: 0,
+      height: 10,
+    },
   },
   scanCopy: {
     marginBottom: 14,
   },
   scanTitle: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '700',
+    color: '#f8fbff',
+    fontSize: 18,
+    fontWeight: '800',
   },
   scanDescription: {
     marginTop: 6,
-    color: '#d1c4f4',
-    fontSize: 13,
-    lineHeight: 19,
+    color: '#8aa1ab',
+    fontSize: 14,
+    lineHeight: 21,
   },
   scanButton: {
     alignSelf: 'flex-start',
-    backgroundColor: '#7c3aed',
-    borderRadius: 12,
+    backgroundColor: '#0891b2',
+    borderRadius: 14,
     paddingHorizontal: 16,
     paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
   },
   scanButtonDisabled: {
-    opacity: 0.7,
+    opacity: 0.72,
   },
   scanButtonText: {
     color: '#ffffff',
@@ -559,42 +600,46 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   formCard: {
-    backgroundColor: '#1b1b1b',
-    borderRadius: 18,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
     padding: 18,
+    borderWidth: 1,
+    borderColor: '#16313a',
   },
   label: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 8,
     marginTop: 16,
   },
   input: {
-    backgroundColor: '#262626',
-    color: '#ffffff',
+    backgroundColor: '#0f171c',
+    color: '#f8fbff',
     paddingHorizontal: 16,
     paddingVertical: 15,
-    borderRadius: 12,
+    borderRadius: 14,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   helperText: {
-    color: '#a0a0a0',
+    color: '#6f8791',
     fontSize: 12,
     marginTop: 6,
     lineHeight: 18,
   },
   addButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
-    borderRadius: 12,
+    borderRadius: 14,
     marginTop: 28,
   },
   disabledButton: {
-    backgroundColor: '#666666',
+    opacity: 0.72,
   },
   buttonText: {
     color: '#ffffff',

@@ -385,13 +385,18 @@ export default function SettingsScreen() {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#7c3aed" />
+        <View style={styles.glowOrbOne} />
+        <View style={styles.glowOrbTwo} />
+        <ActivityIndicator size="large" color="#0891b2" />
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
+      <View style={styles.glowOrbOne} />
+      <View style={styles.glowOrbTwo} />
+
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -406,17 +411,17 @@ export default function SettingsScreen() {
         <View style={styles.maxWidth}>
           <View style={styles.header}>
             <TouchableOpacity style={styles.headerButton} onPress={() => router.back()}>
-              <ArrowLeft size={22} color="#7c3aed" />
+              <ArrowLeft size={22} color="#0891b2" />
             </TouchableOpacity>
             <Text style={styles.title}>Settings</Text>
             <TouchableOpacity style={styles.headerButton} onPress={loadData}>
-              <RefreshCw size={20} color="#7c3aed" />
+              <RefreshCw size={20} color="#0891b2" />
             </TouchableOpacity>
           </View>
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Server size={20} color="#7c3aed" />
+              <Server size={20} color="#0891b2" />
               <Text style={styles.sectionTitle}>Companion Connection</Text>
             </View>
 
@@ -434,7 +439,7 @@ export default function SettingsScreen() {
               )}
 
               <TouchableOpacity style={styles.refreshButton} onPress={() => testConnection(serverIpInput.trim(), serverTokenInput.trim())}>
-                <RefreshCw size={18} color="#7c3aed" />
+                <RefreshCw size={18} color="#0891b2" />
               </TouchableOpacity>
             </View>
 
@@ -464,7 +469,7 @@ export default function SettingsScreen() {
               autoCorrect={false}
             />
             <TouchableOpacity style={styles.tokenScanButton} onPress={handleOpenTokenScanner}>
-              <Camera size={16} color="#c4b5fd" />
+              <Camera size={16} color="#67e8f9" />
               <Text style={styles.tokenScanButtonText}>Scan QR Code</Text>
             </TouchableOpacity>
             <Text style={styles.helpText}>
@@ -479,7 +484,7 @@ export default function SettingsScreen() {
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Wifi size={20} color="#7c3aed" />
+              <Wifi size={20} color="#0891b2" />
               <Text style={styles.sectionTitle}>Saved Devices</Text>
             </View>
 
@@ -497,7 +502,7 @@ export default function SettingsScreen() {
 
                   <View style={styles.deviceActions}>
                     <TouchableOpacity style={styles.actionButton} onPress={() => handleEditDevice(device)}>
-                      <Edit size={20} color="#7c3aed" />
+                      <Edit size={20} color="#0891b2" />
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionButton} onPress={() => handleDeleteDevice(device.id)}>
@@ -520,7 +525,7 @@ export default function SettingsScreen() {
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Info size={20} color="#7c3aed" />
+              <Info size={20} color="#0891b2" />
               <Text style={styles.sectionTitle}>About</Text>
             </View>
 
@@ -693,13 +698,31 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  glowOrbOne: {
+    position: 'absolute',
+    top: -120,
+    right: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34, 211, 238, 0.08)',
+  },
+  glowOrbTwo: {
+    position: 'absolute',
+    top: 240,
+    left: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8, 145, 178, 0.1)',
   },
   content: {
     paddingHorizontal: 16,
@@ -719,20 +742,24 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 21,
-    backgroundColor: '#1d1d1d',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     alignItems: 'center',
     justifyContent: 'center',
   },
   title: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 28,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   section: {
-    backgroundColor: '#1b1b1b',
-    borderRadius: 18,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
     padding: 18,
     marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#16313a',
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -740,18 +767,20 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   sectionTitle: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '800',
     marginLeft: 8,
   },
   serverStatus: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#262626',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     padding: 12,
-    borderRadius: 12,
+    borderRadius: 14,
     marginBottom: 12,
   },
   statusRow: {
@@ -779,24 +808,26 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   infoText: {
-    color: '#c4b5fd',
+    color: '#67e8f9',
     marginBottom: 12,
     lineHeight: 20,
   },
   inputLabel: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 8,
     marginTop: 14,
   },
   input: {
-    backgroundColor: '#262626',
-    borderRadius: 12,
+    backgroundColor: '#0f171c',
+    borderRadius: 14,
     paddingHorizontal: 14,
     paddingVertical: 14,
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   tokenScanButton: {
     marginTop: 10,
@@ -804,25 +835,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#2c1a52',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     borderRadius: 999,
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
   tokenScanButtonText: {
-    color: '#e9ddff',
+    color: '#d8fbff',
     fontSize: 13,
     fontWeight: '700',
   },
   helpText: {
-    color: '#9ca3af',
+    color: '#7f97a1',
     fontSize: 12,
     marginTop: 8,
     lineHeight: 18,
   },
   primaryButton: {
     marginTop: 18,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     paddingVertical: 15,
     borderRadius: 12,
     alignItems: 'center',
@@ -833,25 +866,27 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   deviceItem: {
-    backgroundColor: '#262626',
-    borderRadius: 14,
+    backgroundColor: '#0f171c',
+    borderRadius: 16,
     padding: 14,
     marginBottom: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 12,
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   deviceInfo: {
     flex: 1,
   },
   deviceName: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '800',
     marginBottom: 6,
   },
   deviceLine: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     fontSize: 13,
     lineHeight: 18,
   },
@@ -863,12 +898,14 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: '#091117',
+    borderWidth: 1,
+    borderColor: '#17323b',
     alignItems: 'center',
     justifyContent: 'center',
   },
   noDevicesText: {
-    color: '#9ca3af',
+    color: '#8aa1ab',
     textAlign: 'center',
     paddingVertical: 10,
   },
@@ -891,16 +928,16 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   appName: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   appVersion: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     marginTop: 4,
   },
   appDescription: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     textAlign: 'center',
     marginTop: 8,
     lineHeight: 20,
@@ -915,7 +952,7 @@ const styles = StyleSheet.create({
   },
   scannerModal: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
   },
   scannerHeader: {
     paddingHorizontal: 16,
@@ -927,9 +964,9 @@ const styles = StyleSheet.create({
     width: 42,
   },
   scannerTitle: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   scannerCameraShell: {
     flex: 1,
@@ -966,7 +1003,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   scannerSubtext: {
-    color: '#9ca3af',
+    color: '#8aa1ab',
     fontSize: 13,
     lineHeight: 20,
   },
@@ -975,16 +1012,18 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   modalContent: {
-    backgroundColor: '#1b1b1b',
+    backgroundColor: '#0b1217',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     paddingHorizontal: 18,
     paddingTop: 20,
+    borderTopWidth: 1,
+    borderColor: '#16313a',
   },
   modalTitle: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 22,
-    fontWeight: '700',
+    fontWeight: '800',
     marginBottom: 8,
   },
   modalButtons: {
@@ -994,10 +1033,12 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     flex: 1,
-    backgroundColor: '#262626',
+    backgroundColor: '#0f171c',
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   cancelButtonText: {
     color: '#ffffff',
@@ -1005,7 +1046,7 @@ const styles = StyleSheet.create({
   },
   saveButton: {
     flex: 1,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',

@@ -24,7 +24,7 @@ const NetworkScanner = ({ onServerFound }) => {
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.titleContainer}>
-          <Ionicons name="server-outline" size={20} color="#a78bfa" style={styles.icon} />
+          <Ionicons name="server-outline" size={20} color="#22d3ee" style={styles.icon} />
           <Text style={styles.title}>Server Discovery</Text>
         </View>
         {!searching && (
@@ -136,7 +136,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   scanButton: {
-    backgroundColor: '#7C3AED',
+    backgroundColor: '#0891b2',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
@@ -181,7 +181,7 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#7C3AED',
+    backgroundColor: '#0891b2',
     borderRadius: 3,
   },
   progressText: {

@@ -753,8 +753,8 @@ export default function DeviceControlScreen() {
   if (loading || !device) {
     return (
       <View style={styles.loadingContainer}>
-        <LinearGradient colors={['#08070e', '#130f22', '#0b0a12']} style={StyleSheet.absoluteFillObject} />
-        <ActivityIndicator size="large" color="#8b5cf6" />
+        <LinearGradient colors={['#05090c', '#09141a', '#060b0e']} style={StyleSheet.absoluteFillObject} />
+        <ActivityIndicator size="large" color="#22d3ee" />
         <Text style={styles.loadingText}>{loading ? 'Loading control panel...' : 'Device not found'}</Text>
       </View>
     );
@@ -773,7 +773,7 @@ export default function DeviceControlScreen() {
 
   return (
     <View style={styles.screen}>
-      <LinearGradient colors={['#08070e', '#130f22', '#0b0a12']} style={StyleSheet.absoluteFillObject} />
+      <LinearGradient colors={['#05090c', '#09141a', '#060b0e']} style={StyleSheet.absoluteFillObject} />
       <View style={styles.glowOrbOne} />
       <View style={styles.glowOrbTwo} />
 
@@ -793,7 +793,7 @@ export default function DeviceControlScreen() {
         >
           <View style={styles.header}>
             <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
-              <ArrowLeft size={22} color="#c4b5fd" />
+              <ArrowLeft size={22} color="#67e8f9" />
             </TouchableOpacity>
 
             <View style={styles.headerTitleWrap}>
@@ -802,7 +802,7 @@ export default function DeviceControlScreen() {
             </View>
 
             <TouchableOpacity onPress={() => router.push('/settings')} style={styles.headerButton}>
-              <Settings size={20} color="#c4b5fd" />
+              <Settings size={20} color="#67e8f9" />
             </TouchableOpacity>
           </View>
 
@@ -815,7 +815,7 @@ export default function DeviceControlScreen() {
             <View style={styles.console}>
               <View style={[styles.remoteStage, isKeyboardDockActive && styles.remoteStageKeyboardVisible]}>
                 <LinearGradient
-                  colors={['rgba(77, 43, 140, 0.92)', 'rgba(24, 19, 41, 0.98)', 'rgba(8, 7, 14, 1)']}
+                  colors={['rgba(8, 145, 178, 0.28)', 'rgba(9, 20, 26, 0.98)', 'rgba(5, 9, 12, 1)']}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 1 }}
                   style={StyleSheet.absoluteFillObject}
@@ -882,7 +882,7 @@ export default function DeviceControlScreen() {
                     <View style={styles.touchpadSurface}>
                       <View style={styles.touchpadHalo} />
                       <View style={styles.touchpadCenter}>
-                        <MousePointer size={30} color="#e9ddff" />
+                        <MousePointer size={30} color="#d8fbff" />
                         <Text style={styles.touchpadHint}>Trackpad</Text>
                       </View>
                     </View>
@@ -947,7 +947,7 @@ export default function DeviceControlScreen() {
                         onPress={() => handleTabChange(key)}
                         accessibilityLabel={`Open ${label} panel`}
                       >
-                        <Icon size={17} color={active ? '#f7f2ff' : '#a8a8ba'} />
+                        <Icon size={17} color={active ? '#ecfeff' : '#a8a8ba'} />
                       </TouchableOpacity>
                     );
                   })}
@@ -1005,7 +1005,7 @@ const styles = StyleSheet.create({
     width: 220,
     height: 220,
     borderRadius: 999,
-    backgroundColor: 'rgba(124, 58, 237, 0.16)',
+    backgroundColor: 'rgba(34, 211, 238, 0.12)',
   },
   glowOrbTwo: {
     position: 'absolute',
@@ -1014,7 +1014,7 @@ const styles = StyleSheet.create({
     width: 180,
     height: 180,
     borderRadius: 999,
-    backgroundColor: 'rgba(76, 29, 149, 0.18)',
+    backgroundColor: 'rgba(8, 145, 178, 0.18)',
   },
   loadingContainer: {
     flex: 1,
@@ -1044,9 +1044,9 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 23,
-    backgroundColor: 'rgba(18, 16, 28, 0.88)',
+    backgroundColor: 'rgba(9, 14, 18, 0.88)',
     borderWidth: 1,
-    borderColor: 'rgba(196, 181, 253, 0.12)',
+    borderColor: 'rgba(103, 232, 249, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1074,9 +1074,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 16,
     borderRadius: 28,
-    backgroundColor: 'rgba(17, 16, 25, 0.92)',
+    backgroundColor: 'rgba(8, 12, 16, 0.92)',
     borderWidth: 1,
-    borderColor: 'rgba(196, 181, 253, 0.1)',
+    borderColor: 'rgba(103, 232, 249, 0.1)',
   },
   sessionCopy: {
     flex: 1,
@@ -1114,7 +1114,7 @@ const styles = StyleSheet.create({
   refreshPill: {
     minWidth: 102,
     borderRadius: 999,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     paddingHorizontal: 14,
     paddingVertical: 10,
     flexDirection: 'row',
@@ -1160,7 +1160,7 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     paddingBottom: 12,
     borderWidth: 1,
-    borderColor: 'rgba(233, 221, 255, 0.12)',
+    borderColor: 'rgba(103, 232, 249, 0.14)',
   },
   remoteStageKeyboardVisible: {
     minHeight: 212,
@@ -1227,7 +1227,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   deviceSwitcherLabel: {
-    color: '#d8d2e8',
+    color: '#b7ecf5',
     fontSize: 10,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -1257,7 +1257,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   devicePickerItemActive: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
   },
   devicePickerItemCopy: {
     flex: 1,
@@ -1306,7 +1306,7 @@ const styles = StyleSheet.create({
     width: 200,
     height: 200,
     borderRadius: 999,
-    backgroundColor: 'rgba(124, 58, 237, 0.16)',
+    backgroundColor: 'rgba(34, 211, 238, 0.14)',
   },
   touchpadCenter: {
     alignItems: 'center',
@@ -1314,7 +1314,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   touchpadHint: {
-    color: '#ece7f8',
+    color: '#d8fbff',
     fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.4,
@@ -1355,7 +1355,7 @@ const styles = StyleSheet.create({
     width: 4,
     height: 78,
     borderRadius: 999,
-    backgroundColor: 'rgba(243, 232, 255, 0.72)',
+    backgroundColor: 'rgba(165, 243, 252, 0.72)',
   },
   clickRailOverlay: {
     position: 'absolute',
@@ -1409,7 +1409,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   activeTabButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
   },
   tabLabel: {
     color: '#a8a8ba',
@@ -1428,7 +1428,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.06)',
   },
   panelEyebrow: {
-    color: '#a78bfa',
+    color: '#67e8f9',
     fontSize: 11,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -1470,7 +1470,7 @@ const styles = StyleSheet.create({
   primaryAction: {
     minHeight: 52,
     borderRadius: 18,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     paddingHorizontal: 18,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1487,7 +1487,7 @@ const styles = StyleSheet.create({
     minWidth: 58,
     minHeight: 42,
     borderRadius: 14,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 14,
@@ -1533,7 +1533,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   keySectionTitle: {
-    color: '#d6bcfa',
+    color: '#a5f3fc',
     fontSize: 11,
     fontWeight: '800',
     textTransform: 'uppercase',
@@ -1586,7 +1586,7 @@ const styles = StyleSheet.create({
   comboKey: {
     minHeight: 44,
     borderRadius: 16,
-    backgroundColor: '#2d2243',
+    backgroundColor: '#16313c',
     paddingHorizontal: 14,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1595,7 +1595,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   comboKeyText: {
-    color: '#f7f2ff',
+    color: '#ecfeff',
     fontSize: 13,
     fontWeight: '700',
   },
@@ -1656,7 +1656,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
   },
   mediaStack: {
     gap: 8,
@@ -1695,9 +1695,9 @@ const styles = StyleSheet.create({
   },
   fallbackCard: {
     borderRadius: 30,
-    backgroundColor: 'rgba(17, 16, 25, 0.94)',
+    backgroundColor: 'rgba(8, 12, 16, 0.94)',
     borderWidth: 1,
-    borderColor: 'rgba(196, 181, 253, 0.1)',
+    borderColor: 'rgba(103, 232, 249, 0.1)',
     padding: 20,
     gap: 12,
   },

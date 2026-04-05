@@ -145,7 +145,9 @@ export default function DeviceDetailScreen() {
   if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#7c3aed" />
+        <View style={styles.glowOrbOne} />
+        <View style={styles.glowOrbTwo} />
+        <ActivityIndicator size="large" color="#0891b2" />
       </View>
     );
   }
@@ -153,6 +155,8 @@ export default function DeviceDetailScreen() {
   if (!device) {
     return (
       <View style={styles.loadingContainer}>
+        <View style={styles.glowOrbOne} />
+        <View style={styles.glowOrbTwo} />
         <Text style={styles.errorText}>Device not found</Text>
       </View>
     );
@@ -160,6 +164,9 @@ export default function DeviceDetailScreen() {
 
   return (
     <View style={styles.container}>
+      <View style={styles.glowOrbOne} />
+      <View style={styles.glowOrbTwo} />
+
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
@@ -173,7 +180,7 @@ export default function DeviceDetailScreen() {
         <View style={styles.content}>
           <View style={styles.header}>
             <TouchableOpacity style={styles.headerButton} onPress={() => router.back()}>
-              <ArrowLeft size={22} color="#7c3aed" />
+              <ArrowLeft size={22} color="#0891b2" />
             </TouchableOpacity>
 
             <Text style={styles.headerTitle} numberOfLines={1}>
@@ -185,13 +192,14 @@ export default function DeviceDetailScreen() {
               onPress={() => loadDevice(true)}
               disabled={isRefreshingStatus}
             >
-              <RefreshCw size={20} color="#7c3aed" />
+              <RefreshCw size={20} color="#0891b2" />
             </TouchableOpacity>
           </View>
 
           <View style={styles.deviceCard}>
+            <Text style={styles.eyebrow}>WakeMATE Device</Text>
             <View style={styles.iconContainer}>
-              <Monitor size={46} color="#7c3aed" />
+              <Monitor size={46} color="#0891b2" />
             </View>
 
             <Text style={styles.deviceName}>{device.name}</Text>
@@ -276,14 +284,32 @@ export default function DeviceDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+  },
+  glowOrbOne: {
+    position: 'absolute',
+    top: -120,
+    right: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34, 211, 238, 0.08)',
+  },
+  glowOrbTwo: {
+    position: 'absolute',
+    top: 240,
+    left: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8, 145, 178, 0.1)',
   },
   scrollContent: {
     paddingHorizontal: 16,
@@ -304,48 +330,71 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#1d1d1d',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
     flex: 1,
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: '800',
     textAlign: 'center',
   },
   deviceCard: {
-    backgroundColor: '#1b1b1b',
-    borderRadius: 20,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
     padding: 20,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#16313a',
+    shadowColor: '#22d3ee',
+    shadowOpacity: 0.14,
+    shadowRadius: 18,
+    shadowOffset: {
+      width: 0,
+      height: 10,
+    },
+  },
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: '#67e8f9',
+    marginBottom: 14,
   },
   iconContainer: {
     width: 84,
     height: 84,
     borderRadius: 42,
-    backgroundColor: '#262626',
+    backgroundColor: '#04080b',
+    borderWidth: 1,
+    borderColor: '#17323b',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
   },
   deviceName: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 26,
-    fontWeight: '700',
+    fontWeight: '800',
     textAlign: 'center',
   },
   deviceMeta: {
     marginTop: 6,
-    color: '#9ca3af',
+    color: '#8aa1ab',
     fontSize: 15,
     textAlign: 'center',
   },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#262626',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -365,7 +414,7 @@ const styles = StyleSheet.create({
   detailsContainer: {
     width: '100%',
     borderTopWidth: 1,
-    borderTopColor: '#2f2f2f',
+    borderTopColor: '#17323b',
     paddingTop: 8,
     marginBottom: 24,
   },
@@ -376,15 +425,15 @@ const styles = StyleSheet.create({
     gap: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#2f2f2f',
+    borderBottomColor: '#17323b',
   },
   detailLabel: {
-    color: '#9ca3af',
+    color: '#8aa1ab',
     fontSize: 14,
     flexShrink: 0,
   },
   detailValue: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 14,
     flex: 1,
     textAlign: 'right',
@@ -392,7 +441,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     width: '100%',
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     borderRadius: 14,
     paddingVertical: 16,
     flexDirection: 'row',
@@ -415,7 +464,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   actionButton: {
-    backgroundColor: '#262626',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     borderRadius: 14,
     paddingVertical: 16,
     paddingHorizontal: 18,

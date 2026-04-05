@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   RefreshControl,
   StyleSheet,
   Text,
@@ -158,9 +159,22 @@ export default function DevicesScreen() {
           },
         ]}
       >
-        <View style={styles.headerTextWrap}>
-          <Text style={styles.title}>My Devices</Text>
-          <Text style={styles.subtitle}>Wake, manage, and control your computers.</Text>
+        <View style={styles.brandPanel}>
+          <View style={styles.brandRow}>
+            <View style={styles.brandIconWrap}>
+              <Image
+                source={require('../../assets/images/MenuBar.ICON.png')}
+                style={styles.brandIcon}
+                resizeMode="contain"
+              />
+            </View>
+
+            <View style={styles.headerTextWrap}>
+              <Text style={styles.eyebrow}>WakeMATE</Text>
+              <Text style={styles.title}>Your PCs, ready to wake.</Text>
+              <Text style={styles.subtitle}>Jump straight into your saved devices, scan for a new one, or wake a machine in one tap.</Text>
+            </View>
+          </View>
         </View>
 
         <TouchableOpacity
@@ -168,13 +182,13 @@ export default function DevicesScreen() {
           onPress={() => router.push('/settings')}
           accessibilityLabel="Open settings"
         >
-          <Settings size={22} color="#7c3aed" />
+          <Settings size={22} color="#22d3ee" />
         </TouchableOpacity>
       </View>
 
       <View style={styles.contentContainer}>
         {isLoading ? (
-          <ActivityIndicator size="large" color="#7c3aed" style={styles.loader} />
+          <ActivityIndicator size="large" color="#0891b2" style={styles.loader} />
         ) : devices.length > 0 ? (
           <FlatList
             data={devices}
@@ -192,7 +206,7 @@ export default function DevicesScreen() {
               <RefreshControl
                 refreshing={isRefreshing || isRefreshingStatuses}
                 onRefresh={() => loadDevices({ showSpinner: false, refreshStatuses: true })}
-                tintColor="#7c3aed"
+                tintColor="#0891b2"
               />
             }
             ListHeaderComponent={
@@ -206,7 +220,7 @@ export default function DevicesScreen() {
                   onPress={() => loadDevices({ showSpinner: false, refreshStatuses: true })}
                   disabled={isRefreshing || isRefreshingStatuses}
                 >
-                  <RefreshCw size={16} color="#c4b5fd" />
+                  <RefreshCw size={16} color="#67e8f9" />
                   <Text style={styles.refreshButtonText}>
                     {isRefreshingStatuses ? 'Refreshing...' : 'Refresh status'}
                   </Text>
@@ -216,8 +230,15 @@ export default function DevicesScreen() {
           />
         ) : (
           <View style={styles.emptyContainer}>
+            <View style={styles.emptyLogoWrap}>
+              <Image
+                source={require('../../assets/images/MenuBar.ICON.png')}
+                style={styles.emptyLogo}
+                resizeMode="contain"
+              />
+            </View>
             <Text style={styles.emptyText}>No devices found</Text>
-            <Text style={styles.emptySubtext}>Use the buttons below to scan your network or add a device manually.</Text>
+            <Text style={styles.emptySubtext}>Scan your network or add a machine manually to start waking and controlling it from here.</Text>
           </View>
         )}
       </View>
@@ -235,7 +256,7 @@ export default function DevicesScreen() {
           onPress={() => router.push('/devices/add?scan=1')}
           accessibilityLabel="Scan network and auto fill device info"
         >
-          <Search size={18} color="#e9ddff" />
+          <Search size={18} color="#67e8f9" />
           <Text style={styles.secondaryBottomButtonText}>Scan Network</Text>
         </TouchableOpacity>
 
@@ -255,7 +276,7 @@ export default function DevicesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
   },
   header: {
     flexDirection: 'row',
@@ -263,30 +284,75 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingHorizontal: 20,
     paddingBottom: 12,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
+    gap: 12,
+  },
+  brandPanel: {
+    flex: 1,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#16313a',
+    backgroundColor: '#0b1217',
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    shadowColor: '#22d3ee',
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    shadowOffset: {
+      width: 0,
+      height: 12,
+    },
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   headerTextWrap: {
     flex: 1,
-    paddingRight: 12,
+    paddingLeft: 14,
+  },
+  brandIconWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 18,
+    backgroundColor: '#04080b',
+    borderWidth: 1,
+    borderColor: '#17323b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  brandIcon: {
+    width: 48,
+    height: 48,
+  },
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: '#67e8f9',
+    marginBottom: 6,
   },
   title: {
-    fontSize: 30,
-    fontWeight: '700',
-    color: '#ffffff',
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#f8fbff',
   },
   subtitle: {
-    marginTop: 4,
+    marginTop: 6,
     fontSize: 14,
-    color: '#9ca3af',
+    color: '#8aa1ab',
     lineHeight: 20,
   },
   headerIconButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1f1f1f',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   contentContainer: {
     flex: 1,
@@ -303,20 +369,22 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   listMeta: {
-    color: '#a0a0a0',
+    color: '#8aa1ab',
     fontSize: 14,
   },
   refreshButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#221a36',
+    backgroundColor: '#0e1d24',
+    borderWidth: 1,
+    borderColor: '#17323b',
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
   refreshButtonText: {
-    color: '#e9ddff',
+    color: '#d8fbff',
     fontSize: 13,
     fontWeight: '600',
   },
@@ -329,14 +397,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 32,
   },
+  emptyLogoWrap: {
+    width: 92,
+    height: 92,
+    borderRadius: 24,
+    backgroundColor: '#0b1217',
+    borderWidth: 1,
+    borderColor: '#17323b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  emptyLogo: {
+    width: 64,
+    height: 64,
+  },
   emptyText: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 22,
-    fontWeight: '700',
+    fontWeight: '800',
     marginBottom: 8,
   },
   emptySubtext: {
-    color: '#a0a0a0',
+    color: '#8aa1ab',
     fontSize: 15,
     textAlign: 'center',
     lineHeight: 22,
@@ -346,9 +429,9 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingHorizontal: 16,
     paddingTop: 12,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
     borderTopWidth: 1,
-    borderTopColor: '#232323',
+    borderTopColor: '#14252d',
   },
   bottomButton: {
     flex: 1,
@@ -359,13 +442,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   secondaryBottomButton: {
-    backgroundColor: '#221a36',
+    backgroundColor: '#0d171d',
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   primaryBottomButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
   },
   secondaryBottomButtonText: {
-    color: '#e9ddff',
+    color: '#d8fbff',
     fontSize: 15,
     fontWeight: '700',
     marginLeft: 8,

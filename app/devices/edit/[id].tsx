@@ -145,7 +145,9 @@ export default function EditDeviceScreen() {
   if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#7c3aed" />
+        <View style={styles.glowOrbOne} />
+        <View style={styles.glowOrbTwo} />
+        <ActivityIndicator size="large" color="#0891b2" />
       </View>
     );
   }
@@ -156,6 +158,9 @@ export default function EditDeviceScreen() {
       keyboardVerticalOffset={insets.top}
       style={styles.container}
     >
+      <View style={styles.glowOrbOne} />
+      <View style={styles.glowOrbTwo} />
+
       <ScrollView
         contentContainerStyle={[
           styles.scrollContainer,
@@ -169,9 +174,10 @@ export default function EditDeviceScreen() {
       >
         <View style={styles.content}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <ArrowLeft size={24} color="#7c3aed" />
+            <ArrowLeft size={24} color="#0891b2" />
           </TouchableOpacity>
 
+          <Text style={styles.eyebrow}>WakeMATE Setup</Text>
           <Text style={styles.title}>Edit Device</Text>
           <Text style={styles.subtitle}>Update the saved device details without leaving the current setup flow.</Text>
 
@@ -182,7 +188,7 @@ export default function EditDeviceScreen() {
               value={name}
               onChangeText={setName}
               placeholder="My Computer"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               autoCorrect={false}
               returnKeyType="next"
             />
@@ -193,7 +199,7 @@ export default function EditDeviceScreen() {
               value={mac}
               onChangeText={setMac}
               placeholder="00:11:22:33:44:55"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               autoCapitalize="characters"
               autoCorrect={false}
             />
@@ -205,7 +211,7 @@ export default function EditDeviceScreen() {
               value={pingAddress}
               onChangeText={setPingAddress}
               placeholder="192.168.1.100"
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="decimal-pad"
               autoCorrect={false}
             />
@@ -217,7 +223,7 @@ export default function EditDeviceScreen() {
               value={wakeAddress}
               onChangeText={setWakeAddress}
               placeholder={suggestedWakeAddress || '192.168.1.255'}
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="decimal-pad"
               autoCorrect={false}
             />
@@ -231,7 +237,7 @@ export default function EditDeviceScreen() {
               value={wakePort}
               onChangeText={setWakePort}
               placeholder={String(DEFAULT_WAKE_PORT)}
-              placeholderTextColor="#777777"
+              placeholderTextColor="#5f7480"
               keyboardType="number-pad"
             />
             <Text style={styles.helperText}>Most devices use port 9, but some networks use 7 or 0.</Text>
@@ -260,13 +266,31 @@ export default function EditDeviceScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
   },
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#121212',
+    backgroundColor: '#05090c',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  glowOrbOne: {
+    position: 'absolute',
+    top: -120,
+    right: -40,
+    width: 260,
+    height: 260,
+    borderRadius: 999,
+    backgroundColor: 'rgba(34, 211, 238, 0.08)',
+  },
+  glowOrbTwo: {
+    position: 'absolute',
+    top: 240,
+    left: -90,
+    width: 220,
+    height: 220,
+    borderRadius: 999,
+    backgroundColor: 'rgba(8, 145, 178, 0.1)',
   },
   scrollContainer: {
     flexGrow: 1,
@@ -283,58 +307,72 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1d1d1d',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     marginBottom: 20,
   },
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    color: '#67e8f9',
+    marginBottom: 8,
+  },
   title: {
-    fontSize: 30,
-    fontWeight: '700',
-    color: '#ffffff',
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#f8fbff',
   },
   subtitle: {
     marginTop: 6,
     marginBottom: 24,
     fontSize: 15,
     lineHeight: 22,
-    color: '#9ca3af',
+    color: '#8aa1ab',
   },
   formCard: {
-    backgroundColor: '#1b1b1b',
-    borderRadius: 18,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
     padding: 18,
+    borderWidth: 1,
+    borderColor: '#16313a',
   },
   label: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 15,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 8,
     marginTop: 16,
   },
   input: {
-    backgroundColor: '#262626',
-    color: '#ffffff',
+    backgroundColor: '#0f171c',
+    color: '#f8fbff',
     paddingHorizontal: 16,
     paddingVertical: 15,
-    borderRadius: 12,
+    borderRadius: 14,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   helperText: {
-    color: '#a0a0a0',
+    color: '#6f8791',
     fontSize: 12,
     marginTop: 6,
     lineHeight: 18,
   },
   saveButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 16,
-    borderRadius: 12,
+    borderRadius: 14,
     marginTop: 28,
   },
   disabledButton: {
-    backgroundColor: '#666666',
+    opacity: 0.72,
   },
   buttonText: {
     color: '#ffffff',

@@ -125,7 +125,7 @@ const MouseKeyboardScreen: React.FC = () => {
               <Text style={styles.scrollingText}>Scrolling...</Text>
             ) : (
               <>
-                <MousePointer size={32} color="#7c3aed" style={styles.pointerIcon} />
+                <MousePointer size={32} color="#0891b2" style={styles.pointerIcon} />
                 <Text style={styles.touchPadText}>
                   • Tap for left click
                   {'\n'}• Slide to move cursor
@@ -292,7 +292,7 @@ const MouseKeyboardScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: '#05090c',
   },
   touchPadContainer: {
     flex: 1,
@@ -301,8 +301,10 @@ const styles = StyleSheet.create({
   },
   touchPad: {
     flex: 1,
-    backgroundColor: '#262626',
-    borderRadius: 16,
+    backgroundColor: '#0b1217',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#16313a',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -316,7 +318,7 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
   scrollingText: {
-    color: '#7c3aed',
+    color: '#0891b2',
     fontSize: 18,
     fontWeight: '600',
   },
@@ -327,8 +329,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   mouseButton: {
-    backgroundColor: '#2d2d2d',
-    borderRadius: 8,
+    backgroundColor: '#0f171c',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#17323b',
     paddingVertical: 12,
     width: '48%',
     alignItems: 'center',
@@ -351,19 +355,21 @@ const styles = StyleSheet.create({
   },
   activeToggle: {
     borderBottomWidth: 2,
-    borderBottomColor: '#7c3aed',
+    borderBottomColor: '#0891b2',
   },
   panelToggleText: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     fontSize: 16,
   },
   activeToggleText: {
-    color: '#7c3aed',
+    color: '#0891b2',
   },
   keyboardPanel: {
-    backgroundColor: '#262626',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: '#0b1217',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderColor: '#16313a',
     overflow: 'hidden',
   },
   inputContainer: {
@@ -373,15 +379,17 @@ const styles = StyleSheet.create({
   },
   textInput: {
     flex: 1,
-    backgroundColor: '#333333',
-    borderRadius: 8,
+    backgroundColor: '#0f171c',
+    borderRadius: 12,
     color: '#ffffff',
     paddingHorizontal: 12,
     paddingVertical: 8,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#17323b',
   },
   sendButton: {
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -396,19 +404,23 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   specialKey: {
-    backgroundColor: '#333333',
+    backgroundColor: '#0f171c',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#17323b',
     marginRight: 8,
   },
   specialKeyText: {
     color: '#ffffff',
   },
   mediaPanel: {
-    backgroundColor: '#262626',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    backgroundColor: '#0b1217',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    borderColor: '#16313a',
     overflow: 'hidden',
   },
   mediaControls: {
@@ -421,7 +433,9 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#333333',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     justifyContent: 'center',
     alignItems: 'center',
     marginHorizontal: 16,
@@ -430,7 +444,7 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: '#7c3aed',
+    backgroundColor: '#0891b2',
   },
   volumeControls: {
     flexDirection: 'row',
@@ -441,7 +455,9 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#333333',
+    backgroundColor: '#0f171c',
+    borderWidth: 1,
+    borderColor: '#17323b',
     justifyContent: 'center',
     alignItems: 'center',
     marginHorizontal: 16,

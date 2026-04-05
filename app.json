@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "wakemate-mobile",
+    "name": "WakeMATE",
     "slug": "wakemate-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -10,6 +10,11 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.anonymous.wakematemobile",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.anonymous.wakematemobile"
+        ]
+      },
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "WakeMATE needs local network access to discover your computer and send Wake-on-LAN packets."
       }
@@ -49,7 +54,9 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "@bacons/apple-targets",
+      "./plugins/withQuotedReactNativeBundleScript"
     ],
     "experiments": {
       "typedRoutes": true

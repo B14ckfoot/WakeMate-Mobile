@@ -3,6 +3,7 @@ import axios from 'axios';
 import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
 import { getSuggestedWakeAddress, normalizeDevice, sanitizeWakePort } from '../utils/deviceNetwork';
+import { syncDevicesToWidgetStorage } from '../widget/widgetSharedStorage';
 
 const SERVER_IP_KEY = 'serverIp';
 const SERVER_TOKEN_KEY = 'serverToken';
@@ -292,9 +293,19 @@ const deviceService = {
     try {
       const normalizedDevices = devices.map((device) => normalizeDevice(device));
       await AsyncStorage.setItem('devices', JSON.stringify(normalizedDevices));
+      syncDevicesToWidgetStorage(normalizedDevices);
     } catch (error) {
       console.error('Error saving devices:', error);
       throw error;
+    }
+  },
+
+  async syncWidgetData(): Promise<void> {
+    try {
+      const devices = await this.getDevices();
+      syncDevicesToWidgetStorage(devices);
+    } catch (error) {
+      console.error('Error syncing widget data:', error);
     }
   },
 

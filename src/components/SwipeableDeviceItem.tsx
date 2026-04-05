@@ -144,8 +144,10 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   deviceItem: {
-    backgroundColor: '#1e1e1e',
-    borderRadius: 12,
+    backgroundColor: '#0b1217',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#16313a',
     width: '100%',
     zIndex: 1,
   },
@@ -161,13 +163,13 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   deviceName: {
-    color: '#ffffff',
+    color: '#f8fbff',
     fontSize: 18,
-    fontWeight: '600',
+    fontWeight: '700',
     marginBottom: 4,
   },
   deviceIp: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     fontSize: 14,
     lineHeight: 20,
   },
@@ -184,7 +186,7 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   statusText: {
-    color: '#a0a0a0',
+    color: '#7f97a1',
     fontSize: 14,
     flexShrink: 1,
   },
