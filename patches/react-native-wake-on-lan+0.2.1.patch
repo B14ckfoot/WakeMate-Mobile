@@ -1,0 +1,296 @@
+diff --git a/node_modules/react-native-wake-on-lan/android/src/main/java/com/wakeonlan/WakeOnLanModule.kt b/node_modules/react-native-wake-on-lan/android/src/main/java/com/wakeonlan/WakeOnLanModule.kt
+index 035255c..30dc5ee 100644
+--- a/node_modules/react-native-wake-on-lan/android/src/main/java/com/wakeonlan/WakeOnLanModule.kt
++++ b/node_modules/react-native-wake-on-lan/android/src/main/java/com/wakeonlan/WakeOnLanModule.kt
+@@ -1,9 +1,13 @@
+ package com.wakeonlan
+ 
++import com.facebook.react.bridge.Arguments
+ import com.facebook.react.bridge.ReactApplicationContext
+ import com.facebook.react.bridge.ReactContextBaseJavaModule
+ import com.facebook.react.bridge.ReactMethod
+ import com.facebook.react.bridge.Promise
++import java.net.DatagramPacket
++import java.net.DatagramSocket
++import java.net.InetAddress
+ 
+ class WakeOnLanModule(reactContext: ReactApplicationContext) :
+   ReactContextBaseJavaModule(reactContext) {
+@@ -12,13 +16,64 @@ class WakeOnLanModule(reactContext: ReactApplicationContext) :
+     return NAME
+   }
+ 
+-  // Example method
+-  // See https://reactnative.dev/docs/native-modules-android
+   @ReactMethod
+   fun multiply(a: Double, b: Double, promise: Promise) {
+     promise.resolve(a * b)
+   }
+ 
++  @ReactMethod
++  fun awake(macAddress: String, broadcastAddress: String, port: Double, promise: Promise) {
++    try {
++      val macHex = macAddress.replace(Regex("[^0-9A-Fa-f]"), "")
++      if (macHex.length != 12) {
++        throw IllegalArgumentException("MAC address must contain exactly 6 bytes")
++      }
++
++      val wakePort = port.toInt()
++      if (wakePort < 0 || wakePort > 65535 || wakePort.toDouble() != port) {
++        throw IllegalArgumentException("Wake-on-LAN port must be between 0 and 65535")
++      }
++
++      val magicPacket = createMagicPacket(macHex)
++      val destination = InetAddress.getByName(broadcastAddress)
++
++      DatagramSocket().use { socket ->
++        socket.broadcast = true
++        socket.reuseAddress = true
++        socket.send(DatagramPacket(magicPacket, magicPacket.size, destination, wakePort))
++      }
++
++      promise.resolve(
++        Arguments.createMap().apply {
++          putBoolean("ok", true)
++          putString("broadcastAddress", destination.hostAddress ?: broadcastAddress)
++          putInt("port", wakePort)
++        }
++      )
++    } catch (error: Exception) {
++      promise.reject("E_WAKE_ON_LAN", error.message, error)
++    }
++  }
++
++  private fun createMagicPacket(macHex: String): ByteArray {
++    val macBytes = ByteArray(6) { index ->
++      macHex.substring(index * 2, index * 2 + 2).toInt(16).toByte()
++    }
++
++    return ByteArray(6 + macBytes.size * 16).apply {
++      for (index in 0 until 6) {
++        this[index] = 0xFF.toByte()
++      }
++
++      for (repeatIndex in 0 until 16) {
++        macBytes.copyInto(
++          destination = this,
++          destinationOffset = 6 + repeatIndex * macBytes.size,
++        )
++      }
++    }
++  }
++
+   companion object {
+     const val NAME = "WakeOnLan"
+   }
+diff --git a/node_modules/react-native-wake-on-lan/ios/WakeOnLan.mm b/node_modules/react-native-wake-on-lan/ios/WakeOnLan.mm
+index ff22660..9678016 100644
+--- a/node_modules/react-native-wake-on-lan/ios/WakeOnLan.mm
++++ b/node_modules/react-native-wake-on-lan/ios/WakeOnLan.mm
+@@ -6,7 +6,9 @@ RCT_EXTERN_METHOD(multiply:(float)a withB:(float)b
+                  withResolver:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
+ 
+-RCT_EXTERN_METHOD(awake:(NSString)macAddress withPort:(NSNumber)port
++RCT_EXTERN_METHOD(awake:(NSString *)macAddress
++                 broadcastAddress:(NSString *)broadcastAddress
++                 port:(NSNumber *)port
+                  withResolver:(RCTPromiseResolveBlock)resolve
+                  withRejecter:(RCTPromiseRejectBlock)reject)
+ 
+diff --git a/node_modules/react-native-wake-on-lan/ios/WakeOnLan.swift b/node_modules/react-native-wake-on-lan/ios/WakeOnLan.swift
+index bcb4b31..4799134 100644
+--- a/node_modules/react-native-wake-on-lan/ios/WakeOnLan.swift
++++ b/node_modules/react-native-wake-on-lan/ios/WakeOnLan.swift
+@@ -6,9 +6,29 @@ class WakeOnLan: NSObject {
+     resolve(a*b)
+   }
+ 
+-    @objc(awake:withPort:withResolver:withRejecter:)
+-    func awake(macADdress: String, port: Int, resolve:RCTPromiseResolveBlock,reject:RCTPromiseRejectBlock) -> Void {
+-        let computer = Awake.Device(MAC: macADdress, BroadcastAddr: "255.255.255.255", Port: 9)
+-        resolve(Awake.target(device: computer))
++  @objc
++  static func requiresMainQueueSetup() -> Bool {
++    return false
++  }
++
++  @objc(awake:broadcastAddress:port:withResolver:withRejecter:)
++  func awake(macAddress: String, broadcastAddress: String, port: NSNumber, resolve:RCTPromiseResolveBlock,reject:RCTPromiseRejectBlock) -> Void {
++    do {
++      let wakePortValue = port.intValue
++      guard wakePortValue >= 0 && wakePortValue <= 65535 else {
++        reject("E_WAKE_ON_LAN", "Wake-on-LAN port must be between 0 and 65535", nil)
++        return
++      }
++      let wakePort = UInt16(wakePortValue)
++      let computer = Awake.Device(MAC: macAddress, BroadcastAddr: broadcastAddress, Port: wakePort)
++      try Awake.target(device: computer)
++      resolve([
++        "ok": true,
++        "broadcastAddress": broadcastAddress,
++        "port": wakePortValue,
++      ])
++    } catch {
++      reject("E_WAKE_ON_LAN", error.localizedDescription, error)
+     }
++  }
+ }
+diff --git a/node_modules/react-native-wake-on-lan/ios/Wol.swift b/node_modules/react-native-wake-on-lan/ios/Wol.swift
+index 3ce0759..4e6de68 100644
+--- a/node_modules/react-native-wake-on-lan/ios/Wol.swift
++++ b/node_modules/react-native-wake-on-lan/ios/Wol.swift
+@@ -13,78 +13,110 @@ public class Awake {
+         var Port: UInt16 = 9
+     }
+     
+-    public enum WakeError: Error {
++    public enum WakeError: LocalizedError {
++        case InvalidMacAddress(reason: String)
++        case InvalidBroadcastAddress(reason: String)
+         case SocketSetupFailed(reason: String)
+         case SetSocketOptionsFailed(reason: String)
+         case SendMagicPacketFailed(reason: String)
+-    }
+ 
+-    public static func target(device: Device) -> Error? {
+-        var sock: Int32
+-        var target = sockaddr_in()
++        public var errorDescription: String? {
++            switch self {
++            case .InvalidMacAddress(let reason):
++                return reason
++            case .InvalidBroadcastAddress(let reason):
++                return reason
++            case .SocketSetupFailed(let reason):
++                return "Unable to open the Wake-on-LAN socket: \(reason)"
++            case .SetSocketOptionsFailed(let reason):
++                return "Unable to enable UDP broadcast for Wake-on-LAN: \(reason)"
++            case .SendMagicPacketFailed(let reason):
++                return "Unable to send the Wake-on-LAN magic packet: \(reason)"
++            }
++        }
++    }
+     
+-        target.sin_family = sa_family_t(AF_INET)
++    public static func target(device: Device) throws {
++        let macBytes = try parseMacAddress(device.MAC)
++        let packet = createMagicPacket(macBytes: macBytes)
++        var broadcastAddress = in_addr()
+         
+-        // Check Broadcast address (is an IP address or a domain name)
+-        var bcaddr = inet_addr(device.BroadcastAddr)
+-        if bcaddr == INADDR_NONE {
+-            bcaddr = inet_addr(gethostbyname(device.BroadcastAddr))
++        guard inet_pton(AF_INET, device.BroadcastAddr, &broadcastAddress) == 1 else {
++            throw WakeError.InvalidBroadcastAddress(reason: "Broadcast address must be a valid IPv4 address")
+         }
+-        target.sin_addr.s_addr = bcaddr
+         
+-        let isLittleEndian = Int(OSHostByteOrder()) == OSLittleEndian
+-        target.sin_port = isLittleEndian ? _OSSwapInt16(device.Port) : device.Port
++        var target = sockaddr_in()
++        target.sin_len = UInt8(MemoryLayout<sockaddr_in>.stride)
++        target.sin_family = sa_family_t(AF_INET)
++        target.sin_addr = broadcastAddress
++        target.sin_port = device.Port.bigEndian
+         
+         // Setup the packet socket
+-        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
++        let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+         if sock < 0 {
+             let err = String(utf8String: strerror(errno)) ?? ""
+-            return WakeError.SocketSetupFailed(reason: err)
++            throw WakeError.SocketSetupFailed(reason: err)
++        }
++        defer {
++            close(sock)
+         }
+         
+-        let packet = Awake.createMagicPacket(mac: device.MAC)
+-        let sockaddrLen = socklen_t(MemoryLayout<sockaddr>.stride)
+-        let intLen = socklen_t(MemoryLayout<Int>.stride)
++        let sockaddrLen = socklen_t(MemoryLayout<sockaddr_in>.stride)
++        let intLen = socklen_t(MemoryLayout<Int32>.stride)
+         
+         // Set socket options
+-        var broadcast = 1
++        var broadcast: Int32 = 1
+         if setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, intLen) == -1 {
+-            close(sock)
+             let err = String(utf8String: strerror(errno)) ?? ""
+-            return WakeError.SetSocketOptionsFailed(reason: err)
++            throw WakeError.SetSocketOptionsFailed(reason: err)
+         }
+         
+         // Send magic packet
+-        var targetCast = unsafeBitCast(target, to: sockaddr.self)
+-        if sendto(sock, packet, packet.count, 0, &targetCast, sockaddrLen) != packet.count {
+-            close(sock)
+-            let err = String(utf8String: strerror(errno)) ?? ""
+-            return WakeError.SendMagicPacketFailed(reason: err)
+-        }
++        let bytesSent = packet.withUnsafeBytes { packetBuffer -> Int in
++            guard let baseAddress = packetBuffer.baseAddress else {
++                return -1
++            }
+             
+-        close(sock)
++            return withUnsafePointer(to: &target) { targetPointer in
++                targetPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
++                    sendto(sock, baseAddress, packet.count, 0, socketAddress, sockaddrLen)
++                }
++            }
++        }
+         
+-        return nil
++        if bytesSent != packet.count {
++            let err = String(utf8String: strerror(errno)) ?? "Unknown sendto failure"
++            throw WakeError.SendMagicPacketFailed(reason: err)
++        }
+     }
+     
+-    private static func createMagicPacket(mac: String) -> [CUnsignedChar] {
+-        var buffer = [CUnsignedChar]()
+-        
+-        // Create header
+-        for _ in 1...6 {
+-            buffer.append(0xFF)
++    private static func parseMacAddress(_ mac: String) throws -> [UInt8] {
++        let normalized = mac.replacingOccurrences(of: "[^0-9A-Fa-f]", with: "", options: .regularExpression)
++        guard normalized.count == 12 else {
++            throw WakeError.InvalidMacAddress(reason: "MAC address must contain exactly 6 bytes")
+         }
+         
+-        let components = mac.components(separatedBy: ":")
+-        let numbers = components.map {
+-            return strtoul($0, nil, 16)
+-        }
++        var macBytes = [UInt8]()
++        var index = normalized.startIndex
+         
+-        // Repeat MAC address 20 times
+-        for _ in 1...20 {
+-            for number in numbers {
+-                buffer.append(CUnsignedChar(number))
++        for _ in 0..<6 {
++            let nextIndex = normalized.index(index, offsetBy: 2)
++            let segment = normalized[index..<nextIndex]
++            guard let value = UInt8(String(segment), radix: 16) else {
++                throw WakeError.InvalidMacAddress(reason: "MAC address contains invalid hex characters")
+             }
++            macBytes.append(value)
++            index = nextIndex
++        }
++        
++        return macBytes
++    }
++    
++    private static func createMagicPacket(macBytes: [UInt8]) -> [UInt8] {
++        var buffer = [UInt8](repeating: 0xFF, count: 6)
++        
++        for _ in 0..<16 {
++            buffer.append(contentsOf: macBytes)
+         }
+         
+         return buffer

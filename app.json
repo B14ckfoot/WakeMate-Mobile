@@ -9,7 +9,10 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.wakematemobile"
+      "bundleIdentifier": "com.anonymous.wakematemobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "WakeMATE needs local network access to discover your computer and send Wake-on-LAN packets."
+      }
     },
     "android": {
       "adaptiveIcon": {

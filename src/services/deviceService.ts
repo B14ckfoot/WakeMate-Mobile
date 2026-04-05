@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
-import { awake } from 'react-native-wake-on-lan';
+import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
 import { getSuggestedWakeAddress, normalizeDevice, sanitizeWakePort } from '../utils/deviceNetwork';
 
@@ -8,6 +8,7 @@ const SERVER_IP_KEY = 'serverIp';
 const SERVER_TOKEN_KEY = 'serverToken';
 const API_PORT = 7777;
 const AUTH_HEADER = 'x-wakemate-token';
+const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
 const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Add it in Settings before using remote controls.';
 const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Add the api_token from wakemate.config.json in Settings.';
 
@@ -34,6 +35,19 @@ const DISCOVERY_TIMEOUT_MS = 1000;
 const DISCOVERY_BATCH_SIZE = 20;
 
 const buildBaseUrl = (ip: string) => `http://${ip}:${API_PORT}`;
+
+const buildWakeAddresses = (device: Pick<Device, 'ip' | 'wakeAddress'>): string[] => {
+  const configuredWakeAddress = device.wakeAddress?.trim() || '';
+  const suggestedWakeAddress = getSuggestedWakeAddress(device.ip);
+
+  return Array.from(
+    new Set(
+      [configuredWakeAddress, suggestedWakeAddress, GLOBAL_BROADCAST_ADDRESS].filter(
+        (value): value is string => Boolean(value)
+      )
+    )
+  );
+};
 
 const normalizeStoredValue = (value: string | null | undefined): string | null => {
   const trimmedValue = value?.trim();
@@ -471,18 +485,32 @@ const deviceService = {
     }
 
     const wakePort = sanitizeWakePort(device.wakePort);
-    const wakeAddress = device.wakeAddress?.trim() || getSuggestedWakeAddress(device.ip) || device.ip.trim();
+    const wakeAddresses = buildWakeAddresses(device);
 
-    try {
-      await awake(mac, wakePort);
+    const sentWakeAddresses: string[] = [];
+    let directWakeError: unknown = null;
+
+    for (const wakeAddress of wakeAddresses) {
+      try {
+        await sendWakeOnLanPacket(mac, wakeAddress, wakePort);
+        sentWakeAddresses.push(wakeAddress);
+      } catch (error) {
+        directWakeError = error;
+        console.warn(`Direct Wake-on-LAN failed for ${wakeAddress}:${wakePort}:`, error);
+      }
+    }
+
+    if (sentWakeAddresses.length > 0) {
       return {
         ok: true,
-        message: `Wake-on-LAN packet sent directly from the mobile app on port ${wakePort}.`,
+        message: `Wake-on-LAN packet sent directly from the mobile app to ${sentWakeAddresses.join(', ')} on port ${wakePort}.`,
+        wakeAddresses: sentWakeAddresses,
+        wakePort,
       };
-    } catch (error) {
-      console.warn('Direct Wake-on-LAN failed, falling back to companion relay:', error);
-      return this.sendWakeRequest(mac, undefined, { wakeAddress, wakePort });
     }
+
+    console.warn('Direct Wake-on-LAN failed for all candidate broadcast addresses, falling back to companion relay:', directWakeError);
+    return this.sendWakeRequest(mac, undefined, { wakeAddress: wakeAddresses[0] || device.ip.trim(), wakePort });
   },
 };
 

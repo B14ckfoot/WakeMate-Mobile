@@ -47,6 +47,8 @@
     </dict>
     <key>NSCameraUsageDescription</key>
     <string>Allow WakeMATE to scan QR codes for your pairing token.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>WakeMATE needs local network access to discover your computer and send Wake-on-LAN packets.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Allow $(PRODUCT_NAME) to access your microphone</string>
     <key>NSUserActivityTypes</key>
