@@ -600,9 +600,6 @@ export default function DeviceControlScreen() {
     <View style={[styles.panelCard, styles.keysPanelCard]}>
       <Text style={styles.panelEyebrow}>Shortcuts</Text>
       <Text style={styles.panelTitle}>Quick Keys</Text>
-      <Text style={styles.panelDescription}>
-        These map to the companion&apos;s supported key names, including combos like Ctrl+Alt+Delete.
-      </Text>
 
       <ScrollView
         style={styles.keysScroll}
@@ -675,12 +672,6 @@ export default function DeviceControlScreen() {
 
   const renderMediaPanel = () => (
     <View style={[styles.panelCard, styles.mediaPanelCard]}>
-      <Text style={styles.panelEyebrow}>Playback</Text>
-      <Text style={styles.panelTitle}>Media Deck</Text>
-      <Text style={styles.panelDescription}>
-        A tighter control stack for music and video without giving up the live touch surface above.
-      </Text>
-
       <View style={styles.mediaDeck}>
         <View style={styles.mediaWheel}>
           <View style={styles.mediaTransportRow}>
@@ -704,17 +695,14 @@ export default function DeviceControlScreen() {
         <View style={styles.mediaStack}>
           <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('volume_up')}>
             <Plus size={20} color="#f5f6fb" />
-            <Text style={styles.mediaStackLabel}>Vol +</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('mute')}>
             <VolumeX size={20} color="#f5f6fb" />
-            <Text style={styles.mediaStackLabel}>Mute</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('volume_down')}>
             <Minus size={20} color="#f5f6fb" />
-            <Text style={styles.mediaStackLabel}>Vol -</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -722,31 +710,25 @@ export default function DeviceControlScreen() {
   );
 
   const renderPowerPanel = () => (
-    <View style={styles.panelCard}>
-      <Text style={styles.panelEyebrow}>System</Text>
-      <Text style={styles.panelTitle}>Power Actions</Text>
-      <Text style={styles.panelDescription}>
-        Restart, shutdown, and log off still confirm before sending anything destructive.
-      </Text>
-
+    <View style={[styles.panelCard, styles.powerPanelCard]}>
       <View style={styles.powerGrid}>
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('shutdown')}>
-          <Power size={24} color="#ffffff" />
+          <Power size={22} color="#ffffff" />
           <Text style={styles.powerButtonText}>Shutdown</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('sleep')}>
-          <Moon size={24} color="#ffffff" />
+          <Moon size={22} color="#ffffff" />
           <Text style={styles.powerButtonText}>Sleep</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('restart')}>
-          <RefreshCw size={24} color="#ffffff" />
+          <RefreshCw size={22} color="#ffffff" />
           <Text style={styles.powerButtonText}>Restart</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('logoff')}>
-          <LogOut size={24} color="#ffffff" />
+          <LogOut size={22} color="#ffffff" />
           <Text style={styles.powerButtonText}>Logoff</Text>
         </TouchableOpacity>
       </View>
@@ -779,6 +761,7 @@ export default function DeviceControlScreen() {
   }
 
   const deviceIsOnline = status === 'online';
+  const isKeyboardDockActive = isKeyboardVisible && activeTab === 'keyboard';
   const showInteractiveConsole = deviceIsOnline && !setupMessage;
   const hasMultipleDevices = savedDevices.length > 1;
   const feedbackStyle =
@@ -796,7 +779,7 @@ export default function DeviceControlScreen() {
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={insets.top + 12}
+        keyboardVerticalOffset={0}
         style={styles.container}
       >
         <View
@@ -830,7 +813,7 @@ export default function DeviceControlScreen() {
           ) : null}
           {showInteractiveConsole ? (
             <View style={styles.console}>
-              <View style={[styles.remoteStage, isKeyboardVisible && styles.remoteStageKeyboardVisible]}>
+              <View style={[styles.remoteStage, isKeyboardDockActive && styles.remoteStageKeyboardVisible]}>
                 <LinearGradient
                   colors={['rgba(77, 43, 140, 0.92)', 'rgba(24, 19, 41, 0.98)', 'rgba(8, 7, 14, 1)']}
                   start={{ x: 0, y: 0 }}
@@ -906,7 +889,7 @@ export default function DeviceControlScreen() {
                   </PanGestureHandler>
                 </GestureHandlerRootView>
 
-                <View style={[styles.scrollRailOverlay, isKeyboardVisible && styles.scrollRailOverlayKeyboard]}>
+                <View style={[styles.scrollRailOverlay, isKeyboardDockActive && styles.scrollRailOverlayKeyboard]}>
                   <TouchableOpacity style={styles.scrollButtonCompact} onPress={() => handleScroll(4)}>
                     <ChevronUp size={16} color="#f5f6fb" />
                   </TouchableOpacity>
@@ -920,7 +903,7 @@ export default function DeviceControlScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <View style={[styles.clickRailOverlay, isKeyboardVisible && styles.clickRailOverlayKeyboard]}>
+                <View style={[styles.clickRailOverlay, isKeyboardDockActive && styles.clickRailOverlayKeyboard]}>
                   <TouchableOpacity
                     style={[styles.clickKey, styles.clickKeyWide]}
                     onPress={() => handleMouseClick('left')}
@@ -947,7 +930,7 @@ export default function DeviceControlScreen() {
                 </View>
               </View>
 
-              <View style={[styles.bottomDock, isKeyboardVisible && styles.bottomDockKeyboardVisible]}>
+              <View style={[styles.bottomDock, isKeyboardDockActive && styles.bottomDockKeyboardVisible]}>
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -1180,7 +1163,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(233, 221, 255, 0.12)',
   },
   remoteStageKeyboardVisible: {
-    minHeight: 250,
+    minHeight: 212,
   },
   stageTextureOne: {
     position: 'absolute',
@@ -1346,8 +1329,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   scrollRailOverlayKeyboard: {
-    top: 66,
-    bottom: 70,
+    top: 62,
+    bottom: 58,
   },
   scrollButtonCompact: {
     width: 34,
@@ -1383,7 +1366,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   clickRailOverlayKeyboard: {
-    bottom: 10,
+    bottom: 8,
   },
   bottomDock: {
     borderRadius: 24,
@@ -1392,7 +1375,7 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   bottomDockKeyboardVisible: {
-    paddingBottom: 6,
+    paddingBottom: 4,
   },
   clickKey: {
     minHeight: 38,
@@ -1535,68 +1518,70 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   keysPanelCard: {
-    maxHeight: 340,
+    maxHeight: 300,
+    paddingTop: 14,
+    gap: 10,
   },
   keysScroll: {
-    maxHeight: 240,
+    maxHeight: 214,
   },
   keysScrollContent: {
-    gap: 16,
-    paddingBottom: 4,
+    gap: 12,
+    paddingBottom: 2,
   },
   keySection: {
-    gap: 10,
+    gap: 8,
   },
   keySectionTitle: {
     color: '#d6bcfa',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1,
+    letterSpacing: 1.4,
   },
   modifierRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   modifierKey: {
-    minWidth: 76,
-    minHeight: 44,
-    borderRadius: 16,
+    minWidth: 64,
+    minHeight: 38,
+    borderRadius: 14,
     backgroundColor: '#272b35',
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modifierKeyText: {
     color: '#f5f6fb',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   keyGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   gridKey: {
-    width: '22%',
-    minWidth: 68,
-    minHeight: 46,
-    borderRadius: 16,
+    width: '21.5%',
+    minWidth: 60,
+    minHeight: 40,
+    borderRadius: 14,
     backgroundColor: '#272b35',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
   },
   gridKeyText: {
     color: '#ffffff',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   comboWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   comboKey: {
     minHeight: 44,
@@ -1634,80 +1619,78 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   mediaPanelCard: {
-    gap: 16,
+    gap: 10,
+    padding: 12,
   },
   mediaDeck: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 16,
+    gap: 10,
   },
   mediaWheel: {
     flex: 1,
-    minHeight: 148,
-    borderRadius: 26,
+    minHeight: 120,
+    borderRadius: 22,
     backgroundColor: '#12151d',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.06)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 14,
+    padding: 10,
   },
   mediaTransportRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 10,
   },
   mediaButton: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
     backgroundColor: '#2a2e38',
     alignItems: 'center',
     justifyContent: 'center',
   },
   mediaButtonPrimary: {
-    width: 74,
-    height: 74,
-    borderRadius: 37,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: '#7c3aed',
   },
   mediaStack: {
-    gap: 12,
+    gap: 8,
   },
   mediaStackButton: {
-    width: 88,
-    minHeight: 60,
-    borderRadius: 20,
+    width: 64,
+    minHeight: 52,
+    borderRadius: 16,
     backgroundColor: '#252934',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
-  mediaStackLabel: {
-    color: '#f5f6fb',
-    fontSize: 11,
-    fontWeight: '700',
+  powerPanelCard: {
+    padding: 12,
   },
   powerGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: 10,
   },
   powerButton: {
     width: '47.8%',
-    minHeight: 108,
-    borderRadius: 22,
+    minHeight: 84,
+    borderRadius: 18,
     backgroundColor: '#252934',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
-    gap: 10,
+    padding: 12,
+    gap: 6,
   },
   powerButtonText: {
     color: '#ffffff',
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '700',
   },
   fallbackCard: {

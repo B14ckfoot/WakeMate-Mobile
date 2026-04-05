@@ -102,3 +102,6 @@ Without the companion server, you can still work on the UI, but remote input and
 - `src/services/`: device and companion API logic
 - `src/context/`: shared app state
 
+
+
+ 
