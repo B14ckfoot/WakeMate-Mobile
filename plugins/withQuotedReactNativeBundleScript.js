@@ -13,8 +13,14 @@ fi
 # The project root by default is one level up from the ios directory
 export PROJECT_ROOT="$PROJECT_DIR"/..
 
-if [[ "$CONFIGURATION" = *Debug* ]]; then
+if [[ "$CONFIGURATION" = *Debug* && "$PLATFORM_NAME" == *simulator ]]; then
   export SKIP_BUNDLING=1
+elif [[ "$CONFIGURATION" = *Debug* ]]; then
+  # Physical-device debug builds need an embedded production bundle because
+  # Expo devtools sockets are unavailable once the app is running from
+  # main.jsbundle instead of Metro.
+  export CONFIGURATION="Release"
+  export NODE_ENV="production"
 fi
 if [[ -z "$ENTRY_FILE" ]]; then
   # Set the entry JS file using the bundler's entry resolution.
@@ -48,6 +54,11 @@ export RN_XCODE_SCRIPT_PATH="$("$NODE_BINARY" --print "require('path').dirname(r
 
 const withQuotedReactNativeBundleScript = (config) =>
   withXcodeProject(config, (configWithProject) => {
+    // React Native's Xcode bundling script writes build artifacts like ip.txt
+    // into the built app during device debug builds, which is blocked when
+    // user script sandboxing is enabled.
+    configWithProject.modResults.updateBuildProperty('ENABLE_USER_SCRIPT_SANDBOXING', 'NO');
+
     const shellPhases = configWithProject.modResults.hash.project.objects.PBXShellScriptBuildPhase ?? {};
 
     for (const [key, phase] of Object.entries(shellPhases)) {

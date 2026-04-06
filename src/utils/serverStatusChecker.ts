@@ -115,7 +115,7 @@ export async function testCommandEndpoint(
       };
     }
 
-    if (response.status === 401) {
+    if (response.status === 401 || response.status === 403) {
       return {
         success: false,
         message: 'Pairing token was rejected by the companion.',

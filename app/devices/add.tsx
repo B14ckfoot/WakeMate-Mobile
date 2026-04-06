@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { isAxiosError } from 'axios';
 import {
   ActivityIndicator,
   Alert,
@@ -37,7 +38,19 @@ const NAME_KEYS = [
   'systemname',
 ];
 const IP_KEYS = ['ip', 'localip', 'ipaddress', 'address', 'hostip', 'ipv4', 'localaddress'];
-const MAC_KEYS = ['mac', 'macaddress', 'hwaddress', 'physicaladdress', 'ethernetmac', 'wifiMac'];
+const MAC_KEYS = [
+  'mac',
+  'macaddress',
+  'hwaddress',
+  'physicaladdress',
+  'ethernetmac',
+  'wifimac',
+  'primarymac',
+  'primarymacaddress',
+  'adaptermac',
+  'networkadaptermac',
+  'lanmac',
+];
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -168,6 +181,43 @@ const extractCompanionFields = (info: unknown, fallbackIp: string) => {
   };
 };
 
+const isUnauthorizedCompanionInfoError = (error: unknown): boolean =>
+  (isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) ||
+  (error instanceof Error && error.message.includes('Pairing token was rejected by the companion'));
+
+const buildScannedDevice = (fields: {
+  name: string;
+  pingIp: string;
+  mac: string;
+  wakeAddress: string;
+  wakePort?: number;
+}): Device | null => {
+  const trimmedName = fields.name.trim();
+  const trimmedPingIp = fields.pingIp.trim();
+  const normalizedMac = normalizeMacAddress(fields.mac);
+  const resolvedWakeAddress =
+    fields.wakeAddress.trim() || getSuggestedWakeAddress(trimmedPingIp) || trimmedPingIp;
+
+  if (!trimmedName || !trimmedPingIp || !normalizedMac) {
+    return null;
+  }
+
+  if (!isValidIpAddress(trimmedPingIp) || !isValidMacAddress(normalizedMac)) {
+    return null;
+  }
+
+  return {
+    id: Date.now().toString(),
+    name: trimmedName,
+    mac: normalizedMac,
+    ip: trimmedPingIp,
+    wakeAddress: resolvedWakeAddress,
+    wakePort: sanitizeWakePort(fields.wakePort, DEFAULT_WAKE_PORT),
+    status: 'offline',
+    type: 'wifi',
+  };
+};
+
 export default function AddDeviceScreen() {
   const params = useLocalSearchParams<{ scan?: string }>();
   const router = useRouter();
@@ -183,6 +233,7 @@ export default function AddDeviceScreen() {
   const hasAutoScannedRef = useRef(false);
 
   const suggestedWakeAddress = getSuggestedWakeAddress(pingAddress);
+  const shouldAttemptAutoSave = params.scan === '1';
 
   const validateFields = () => {
     if (!name.trim()) {
@@ -223,8 +274,8 @@ export default function AddDeviceScreen() {
     try {
       setIsScanning(true);
 
-      const discoveredServerIp = await deviceService.discoverCompanionServer();
-      if (!discoveredServerIp) {
+      const discoveredCompanion = await deviceService.discoverCompanion();
+      if (!discoveredCompanion) {
         Alert.alert(
           'No WakeMATE Companion Found',
           'Make sure the desktop companion is running and that your phone and computer are on the same Wi-Fi network.'
@@ -232,12 +283,47 @@ export default function AddDeviceScreen() {
         return;
       }
 
-      const savedCompanionIp = discoveredServerIp.trim();
+      const savedCompanionIp = discoveredCompanion.serverIp.trim();
       const hadDifferentServerIp = serverIp.trim() !== savedCompanionIp;
       setServerIp(savedCompanionIp);
 
-      const info = await deviceService.getCompanionInfo(discoveredServerIp);
-      const companionFields = extractCompanionFields(info, discoveredServerIp);
+      let healthFields = {
+        name: discoveredCompanion.deviceName || `WakeMATE ${savedCompanionIp}`,
+        pingIp: savedCompanionIp,
+        mac: discoveredCompanion.macAddress || '',
+        wakeAddress: getSuggestedWakeAddress(savedCompanionIp) || savedCompanionIp,
+      };
+
+      try {
+        const health = await deviceService.getCompanionHealth(savedCompanionIp);
+        const parsedHealthFields = extractCompanionFields(health, savedCompanionIp);
+        healthFields = {
+          ...healthFields,
+          ...parsedHealthFields,
+          mac: parsedHealthFields.mac || healthFields.mac,
+        };
+      } catch {
+        // Keep scanning even if the public health payload cannot be parsed.
+      }
+
+      let companionFields = {
+        ...healthFields,
+      };
+      let protectedInfoNotice: string | null = null;
+
+      try {
+        const info = await deviceService.getCompanionInfo(savedCompanionIp);
+        companionFields = extractCompanionFields(info, savedCompanionIp);
+      } catch (error) {
+        if (!isUnauthorizedCompanionInfoError(error)) {
+          throw error;
+        }
+
+        protectedInfoNotice = serverToken.trim()
+          ? 'The saved pairing token was rejected by the companion, so only the network address could be filled automatically.'
+          : 'This companion requires a pairing token to read device details, so only the network address could be filled automatically.';
+      }
+
       const filledFields: string[] = [];
       const missingFields: string[] = [];
 
@@ -270,8 +356,46 @@ export default function AddDeviceScreen() {
         connectionNotes.push(`Companion API confirmed at ${savedCompanionIp}.`);
       }
 
-      if (!serverToken.trim()) {
+      if (protectedInfoNotice) {
+        connectionNotes.push(protectedInfoNotice);
+      } else if (!serverToken.trim()) {
         connectionNotes.push('Remote commands will work as soon as a pairing token is available.');
+      }
+
+      const scannedDevice = buildScannedDevice({
+        name: name.trim() || companionFields.name,
+        pingIp: pingAddress.trim() || companionFields.pingIp,
+        mac: mac.trim() || companionFields.mac,
+        wakeAddress: wakeAddress.trim() || companionFields.wakeAddress,
+        wakePort: DEFAULT_WAKE_PORT,
+      });
+
+      if (shouldAttemptAutoSave && scannedDevice) {
+        const existingDevices = await deviceService.getDevices();
+        const existingDevice = existingDevices.find(
+          (device) => device.mac === scannedDevice.mac || device.ip === scannedDevice.ip
+        );
+
+        const savedDevice = existingDevice
+          ? {
+              ...existingDevice,
+              ...scannedDevice,
+              id: existingDevice.id,
+            }
+          : scannedDevice;
+
+        const nextDevices = existingDevice
+          ? existingDevices.map((device) => (device.id === existingDevice.id ? savedDevice : device))
+          : [...existingDevices, savedDevice];
+
+        await deviceService.saveDevices(nextDevices);
+
+        Alert.alert(
+          existingDevice ? 'Device Updated' : 'Device Saved',
+          `${connectionNotes.join('\n')}\n\n${savedDevice.name} is now in your saved devices.`,
+          [{ text: 'OK', onPress: () => router.replace('/devices') }]
+        );
+        return;
       }
 
       if (filledFields.length === 0) {
@@ -287,7 +411,14 @@ export default function AddDeviceScreen() {
           ? `Filled: ${filledFields.join(', ')}.\nStill needed: ${missingFields.join(', ')}.`
           : `Filled: ${filledFields.join(', ')}.`;
 
-      Alert.alert('Auto Fill Complete', `${connectionNotes.join('\n')}\n\n${summary}`);
+      const autoSaveNote = shouldAttemptAutoSave
+        ? 'The device was not saved yet because WakeMATE still needs the missing fields above.'
+        : null;
+
+      Alert.alert(
+        'Auto Fill Complete',
+        `${connectionNotes.join('\n')}\n\n${summary}${autoSaveNote ? `\n\n${autoSaveNote}` : ''}`
+      );
     } catch (error) {
       console.error('Error scanning for companion info:', error);
       const message = error instanceof Error ? error.message : 'Unable to scan the network right now.';
@@ -295,7 +426,7 @@ export default function AddDeviceScreen() {
     } finally {
       setIsScanning(false);
     }
-  }, [mac, name, pingAddress, serverIp, serverToken, setServerIp, wakeAddress]);
+  }, [mac, name, pingAddress, router, serverIp, serverToken, setServerIp, shouldAttemptAutoSave, wakeAddress]);
 
   useEffect(() => {
     if (params.scan !== '1' || hasAutoScannedRef.current) {

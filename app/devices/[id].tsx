@@ -99,7 +99,7 @@ export default function DeviceDetailScreen() {
     }
 
     if (status === 'online') {
-      const setupError = await deviceService.getCompanionSetupError();
+      const setupError = await deviceService.getCompanionSetupError({ validateToken: true });
 
       if (setupError) {
         Alert.alert('Companion Setup Required', setupError, [

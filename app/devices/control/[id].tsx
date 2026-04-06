@@ -196,7 +196,7 @@ export default function DeviceControlScreen() {
 
       const [devices, companionSetupError] = await Promise.all([
         deviceService.getDevices(),
-        deviceService.getCompanionSetupError(),
+        deviceService.getCompanionSetupError({ validateToken: true }),
       ]);
       setSavedDevices(devices);
       const foundDevice = devices.find((entry) => entry.id === id);

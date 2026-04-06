@@ -1,8 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import dgram from 'react-native-udp';
 import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
-import { getSuggestedWakeAddress, normalizeDevice, sanitizeWakePort } from '../utils/deviceNetwork';
+import {
+  getSuggestedWakeAddress,
+  isValidIpAddress,
+  isValidMacAddress,
+  normalizeDevice,
+  normalizeMacAddress,
+  sanitizeWakePort,
+} from '../utils/deviceNetwork';
 import { syncDevicesToWidgetStorage } from '../widget/widgetSharedStorage';
 
 const SERVER_IP_KEY = 'serverIp';
@@ -12,6 +20,7 @@ const AUTH_HEADER = 'x-wakemate-token';
 const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
 const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Add it in Settings before using remote controls.';
 const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Add the api_token from wakemate.config.json in Settings.';
+const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Update the api_token in Settings before using remote controls.';
 
 type CommandParams = Record<string, any>;
 type MouseButton = 'left' | 'right' | 'middle';
@@ -20,6 +29,14 @@ type WakeRequestOptions = {
   wakeAddress?: string;
   wakePort?: number;
 };
+type CompanionDiscoveryInfo = {
+  serverIp: string;
+  deviceName: string;
+  macAddress: string | null;
+  apiPort: number;
+  version: string | null;
+};
+type UnknownRecord = Record<string, unknown>;
 
 const DISCOVERY_SUBNETS = [
   '10.0.0.',
@@ -34,6 +51,9 @@ const DISCOVERY_SUBNETS = [
 const PRIORITY_HOSTS = [1, 10, 50, 100, 101, 102, 103, 104, 105, 150, 200, 254];
 const DISCOVERY_TIMEOUT_MS = 1000;
 const DISCOVERY_BATCH_SIZE = 20;
+const UDP_DISCOVERY_PORT = 41234;
+const UDP_DISCOVERY_MESSAGE = 'wakemate:discover';
+const UDP_DISCOVERY_TIMEOUT_MS = 1500;
 
 const buildBaseUrl = (ip: string) => `http://${ip}:${API_PORT}`;
 
@@ -54,6 +74,121 @@ const normalizeStoredValue = (value: string | null | undefined): string | null =
   const trimmedValue = value?.trim();
   return trimmedValue ? trimmedValue : null;
 };
+
+const isRecord = (value: unknown): value is UnknownRecord =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const toCandidateString = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmedValue = value.trim();
+    return trimmedValue || null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  return null;
+};
+
+const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null => {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const deviceName = toCandidateString(payload.device_name) ?? toCandidateString(payload.deviceName);
+  const localIp = toCandidateString(payload.local_ip) ?? toCandidateString(payload.localIp);
+  const macAddressValue = toCandidateString(payload.mac_address) ?? toCandidateString(payload.macAddress);
+  const version = toCandidateString(payload.version);
+  const rawApiPort = Number(payload.api_port ?? payload.apiPort ?? API_PORT);
+
+  if (!deviceName || !localIp || !isValidIpAddress(localIp)) {
+    return null;
+  }
+
+  return {
+    serverIp: localIp,
+    deviceName,
+    macAddress: macAddressValue && isValidMacAddress(macAddressValue) ? normalizeMacAddress(macAddressValue) : null,
+    apiPort: Number.isInteger(rawApiPort) && rawApiPort > 0 && rawApiPort <= 65535 ? rawApiPort : API_PORT,
+    version,
+  };
+};
+
+const closeDiscoverySocket = (socket: { close: (callback?: (...args: unknown[]) => void) => unknown } | null) => {
+  if (!socket) {
+    return;
+  }
+
+  try {
+    socket.close();
+  } catch {
+    // Ignore close failures while resolving discovery attempts.
+  }
+};
+
+const discoverCompanionViaUdp = async (): Promise<CompanionDiscoveryInfo | null> =>
+  new Promise((resolve) => {
+    let socket: ReturnType<typeof dgram.createSocket> | null = null;
+    let settled = false;
+
+    const finish = (result: CompanionDiscoveryInfo | null) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutId);
+      closeDiscoverySocket(socket);
+      resolve(result);
+    };
+
+    const timeoutId = setTimeout(() => finish(null), UDP_DISCOVERY_TIMEOUT_MS);
+
+    try {
+      socket = dgram.createSocket({ type: 'udp4' });
+    } catch (error) {
+      console.warn('UDP discovery unavailable, falling back to HTTP scan:', error);
+      finish(null);
+      return;
+    }
+
+    socket.once('error', () => finish(null));
+    socket.once('message', (message: { toString: (encoding?: string) => string }) => {
+      try {
+        const parsed = parseDiscoveryResponse(JSON.parse(message.toString('utf8')));
+        finish(parsed);
+      } catch {
+        finish(null);
+      }
+    });
+
+    socket.once('listening', () => {
+      try {
+        socket.setBroadcast(true);
+        socket.send(
+          UDP_DISCOVERY_MESSAGE,
+          undefined,
+          undefined,
+          UDP_DISCOVERY_PORT,
+          GLOBAL_BROADCAST_ADDRESS,
+          (error?: Error) => {
+            if (error) {
+              finish(null);
+            }
+          }
+        );
+      } catch {
+        finish(null);
+      }
+    });
+
+    try {
+      socket.bind(0, '0.0.0.0');
+    } catch {
+      finish(null);
+    }
+  });
 
 const persistStringSetting = async (key: string, value: string): Promise<void> => {
   const trimmedValue = value.trim();
@@ -130,6 +265,32 @@ const buildAuthHeaders = (token: string | null): Record<string, string> => {
   }
 
   return headers;
+};
+
+const isAuthFailureStatus = (status: number | undefined): boolean => status === 401 || status === 403;
+
+const normalizeCompanionRequestError = (error: unknown, fallbackMessage: string): Error => {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+
+    if (isAuthFailureStatus(status)) {
+      return new Error(COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE);
+    }
+
+    if (typeof status === 'number') {
+      return new Error(`Companion request failed with status ${status}.`);
+    }
+
+    if (typeof error.message === 'string' && error.message.trim()) {
+      return new Error(error.message);
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error;
+  }
+
+  return new Error(fallbackMessage);
 };
 
 const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
@@ -216,10 +377,10 @@ const requireServerToken = async (): Promise<string> => {
 };
 
 const deviceService = {
-  async getCompanionSetupError(options: { requireToken?: boolean } = {}): Promise<string | null> {
+  async getCompanionSetupError(options: { requireToken?: boolean; validateToken?: boolean; serverIp?: string } = {}): Promise<string | null> {
     const requireToken = options.requireToken ?? true;
     const [serverIp, token] = await Promise.all([
-      this.getServerAddress(),
+      options.serverIp ? Promise.resolve(options.serverIp) : this.getServerAddress(),
       this.getServerToken(),
     ]);
 
@@ -229,6 +390,17 @@ const deviceService = {
 
     if (requireToken && !normalizeStoredValue(token)) {
       return COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE;
+    }
+
+    if (options.validateToken && requireToken) {
+      try {
+        await this.checkPairing(serverIp ?? undefined);
+      } catch (error) {
+        return normalizeCompanionRequestError(
+          error,
+          'Unable to verify the pairing token with the companion.'
+        ).message;
+      }
     }
 
     return null;
@@ -323,21 +495,39 @@ const deviceService = {
 
   async getCompanionInfo(serverIp?: string): Promise<any> {
     const targetIp = await resolveTargetIp(serverIp);
-    const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/info`, {
-      timeout: 3000,
-      headers: {
-        'Cache-Control': 'no-cache',
-      },
-    });
+    const token = normalizeStoredValue(await this.getServerToken());
+    try {
+      const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/info`, {
+        timeout: 3000,
+        headers: {
+          'Cache-Control': 'no-cache',
+          ...(token ? { [AUTH_HEADER]: token } : {}),
+        },
+      });
 
-    return response.data;
+      return response.data;
+    } catch (error) {
+      throw normalizeCompanionRequestError(error, 'Unable to load companion info.');
+    }
   },
 
-  async discoverCompanionServer(): Promise<string | null> {
+  async discoverCompanion(): Promise<CompanionDiscoveryInfo | null> {
+    const udpDiscovery = await discoverCompanionViaUdp();
+    if (udpDiscovery) {
+      await this.setServerAddress(udpDiscovery.serverIp);
+      return udpDiscovery;
+    }
+
     const storedIp = await this.getServerAddress();
 
     if (storedIp?.trim() && await isReachableCompanionServer(storedIp.trim())) {
-      return storedIp.trim();
+      return {
+        serverIp: storedIp.trim(),
+        deviceName: `WakeMATE ${storedIp.trim()}`,
+        macAddress: null,
+        apiPort: API_PORT,
+        version: null,
+      };
     }
 
     for (const subnet of DISCOVERY_SUBNETS) {
@@ -345,23 +535,37 @@ const deviceService = {
 
       if (foundIp) {
         await this.setServerAddress(foundIp);
-        return foundIp;
+        return {
+          serverIp: foundIp,
+          deviceName: `WakeMATE ${foundIp}`,
+          macAddress: null,
+          apiPort: API_PORT,
+          version: null,
+        };
       }
     }
 
     return null;
   },
 
+  async discoverCompanionServer(): Promise<string | null> {
+    const discovery = await this.discoverCompanion();
+    return discovery?.serverIp ?? null;
+  },
+
   async checkPairing(serverIp?: string): Promise<any> {
     const targetIp = await resolveTargetIp(serverIp);
     const token = await requireServerToken();
+    try {
+      const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/pairing/check`, {
+        timeout: 3000,
+        headers: buildAuthHeaders(token),
+      });
 
-    const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/pairing/check`, {
-      timeout: 3000,
-      headers: buildAuthHeaders(token),
-    });
-
-    return response.data;
+      return response.data;
+    } catch (error) {
+      throw normalizeCompanionRequestError(error, 'Unable to verify the pairing token with the companion.');
+    }
   },
 
   async checkDeviceStatus(deviceIp: string): Promise<boolean> {
@@ -383,21 +587,24 @@ const deviceService = {
   async sendWakeRequest(mac: string, serverIp?: string, options: WakeRequestOptions = {}): Promise<any> {
     const targetIp = await resolveTargetIp(serverIp);
     const token = await requireServerToken();
+    try {
+      const response = await axios.post(
+        `${buildBaseUrl(targetIp)}/v1/wake`,
+        {
+          mac,
+          broadcast: options.wakeAddress?.trim() || undefined,
+          port: sanitizeWakePort(options.wakePort),
+        },
+        {
+          headers: buildAuthHeaders(token),
+          timeout: 5000,
+        }
+      );
 
-    const response = await axios.post(
-      `${buildBaseUrl(targetIp)}/v1/wake`,
-      {
-        mac,
-        broadcast: options.wakeAddress?.trim() || undefined,
-        port: sanitizeWakePort(options.wakePort),
-      },
-      {
-        headers: buildAuthHeaders(token),
-        timeout: 5000,
-      }
-    );
-
-    return response.data;
+      return response.data;
+    } catch (error) {
+      throw normalizeCompanionRequestError(error, 'Wake request failed.');
+    }
   },
 
   async sendCommandTo(targetIp: string | null | undefined, command: string, params: CommandParams = {}): Promise<any> {
@@ -416,13 +623,17 @@ const deviceService = {
 
     const token = await requireServerToken();
 
-    const payload = mapLegacyCommand(command, params);
-    const response = await axios.post(`${buildBaseUrl(serverIp)}/v1/command`, payload, {
-      headers: buildAuthHeaders(token),
-      timeout: 5000,
-    });
+    try {
+      const payload = mapLegacyCommand(command, params);
+      const response = await axios.post(`${buildBaseUrl(serverIp)}/v1/command`, payload, {
+        headers: buildAuthHeaders(token),
+        timeout: 5000,
+      });
 
-    return response.data;
+      return response.data;
+    } catch (error) {
+      throw normalizeCompanionRequestError(error, `Unable to send the ${command} command.`);
+    }
   },
 
   async sendCommand(command: string, params: CommandParams = {}): Promise<any> {
