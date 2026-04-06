@@ -33,6 +33,8 @@ type CompanionDiscoveryInfo = {
   serverIp: string;
   deviceName: string;
   macAddress: string | null;
+  wakeAddress: string | null;
+  wakePort: number | null;
   apiPort: number;
   version: string | null;
 };
@@ -98,7 +100,19 @@ const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null
 
   const deviceName = toCandidateString(payload.device_name) ?? toCandidateString(payload.deviceName);
   const localIp = toCandidateString(payload.local_ip) ?? toCandidateString(payload.localIp);
-  const macAddressValue = toCandidateString(payload.mac_address) ?? toCandidateString(payload.macAddress);
+  const macAddressValue =
+    toCandidateString(payload.mac_address) ??
+    toCandidateString(payload.macAddress) ??
+    toCandidateString(payload.primary_mac) ??
+    toCandidateString(payload.primaryMac) ??
+    toCandidateString(payload.physical_address) ??
+    toCandidateString(payload.physicalAddress);
+  const wakeAddress =
+    toCandidateString(payload.broadcast_address) ??
+    toCandidateString(payload.broadcastAddress) ??
+    toCandidateString(payload.wake_address) ??
+    toCandidateString(payload.wakeAddress);
+  const rawWakePort = Number(payload.wake_port ?? payload.wakePort ?? payload.wol_port ?? payload.wolPort);
   const version = toCandidateString(payload.version);
   const rawApiPort = Number(payload.api_port ?? payload.apiPort ?? API_PORT);
 
@@ -110,6 +124,8 @@ const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null
     serverIp: localIp,
     deviceName,
     macAddress: macAddressValue && isValidMacAddress(macAddressValue) ? normalizeMacAddress(macAddressValue) : null,
+    wakeAddress: wakeAddress && isValidIpAddress(wakeAddress) ? wakeAddress : null,
+    wakePort: Number.isInteger(rawWakePort) && rawWakePort >= 0 && rawWakePort <= 65535 ? rawWakePort : null,
     apiPort: Number.isInteger(rawApiPort) && rawApiPort > 0 && rawApiPort <= 65535 ? rawApiPort : API_PORT,
     version,
   };
@@ -525,6 +541,8 @@ const deviceService = {
         serverIp: storedIp.trim(),
         deviceName: `WakeMATE ${storedIp.trim()}`,
         macAddress: null,
+        wakeAddress: null,
+        wakePort: null,
         apiPort: API_PORT,
         version: null,
       };
@@ -539,6 +557,8 @@ const deviceService = {
           serverIp: foundIp,
           deviceName: `WakeMATE ${foundIp}`,
           macAddress: null,
+          wakeAddress: null,
+          wakePort: null,
           apiPort: API_PORT,
           version: null,
         };

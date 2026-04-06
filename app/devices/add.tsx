@@ -51,6 +51,15 @@ const MAC_KEYS = [
   'networkadaptermac',
   'lanmac',
 ];
+const WAKE_ADDRESS_KEYS = [
+  'wakeaddress',
+  'broadcast',
+  'broadcastaddress',
+  'wakebroadcast',
+  'wolbroadcast',
+  'wolbroadcastaddress',
+];
+const WAKE_PORT_KEYS = ['wakeport', 'wakeonlanport', 'wolport', 'wakeudpport', 'woludpport'];
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -67,6 +76,21 @@ const toCandidateString = (value: unknown): string | null => {
 
   if (typeof value === 'number' && Number.isFinite(value)) {
     return String(value);
+  }
+
+  return null;
+};
+
+const toCandidatePort = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65535) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isInteger(parsed) && parsed >= 0 && parsed <= 65535) {
+      return parsed;
+    }
   }
 
   return null;
@@ -103,6 +127,45 @@ const findValueByKeys = (
       const candidate = toCandidateString(value);
 
       if (normalizedKeys.has(normalizeKey(key)) && candidate && (!validator || validator(candidate))) {
+        return candidate;
+      }
+
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
+const findNumberByKeys = (input: unknown, keys: string[]): number | null => {
+  const normalizedKeys = new Set(keys.map(normalizeKey));
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current)) {
+      continue;
+    }
+
+    if (visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+
+    for (const [key, value] of Object.entries(current)) {
+      const candidate = toCandidatePort(value);
+
+      if (normalizedKeys.has(normalizeKey(key)) && candidate !== null) {
         return candidate;
       }
 
@@ -156,20 +219,99 @@ const findMatchingValue = (input: unknown, validator: (value: string) => boolean
   return null;
 };
 
+const collectRecords = (input: unknown): UnknownRecord[] => {
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+  const records: UnknownRecord[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current) || visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+    records.push(current);
+
+    for (const value of Object.values(current)) {
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return records;
+};
+
+const scoreCompanionRecord = (record: UnknownRecord, fallbackIp: string): number => {
+  const ip = findValueByKeys(record, IP_KEYS, isValidIpAddress);
+  const mac = findValueByKeys(record, MAC_KEYS, isValidMacAddress);
+  const wakeAddress = findValueByKeys(record, WAKE_ADDRESS_KEYS, isValidIpAddress);
+  const wakePort = findNumberByKeys(record, WAKE_PORT_KEYS);
+  const name = findValueByKeys(record, NAME_KEYS);
+
+  let score = 0;
+
+  if (ip === fallbackIp) {
+    score += 100;
+  }
+  if (mac) {
+    score += 60;
+  }
+  if (ip) {
+    score += 40;
+  }
+  if (wakeAddress) {
+    score += 20;
+  }
+  if (wakePort !== null) {
+    score += 10;
+  }
+  if (name) {
+    score += 5;
+  }
+
+  return score;
+};
+
 const extractCompanionFields = (info: unknown, fallbackIp: string) => {
   const payload = isRecord(info) && 'data' in info ? (info as UnknownRecord).data : info;
+  const bestRecord = collectRecords(payload)
+    .sort((left, right) => scoreCompanionRecord(right, fallbackIp) - scoreCompanionRecord(left, fallbackIp))[0];
+  const preferredSource = bestRecord ?? payload;
 
   const pingIp =
+    findValueByKeys(preferredSource, IP_KEYS, isValidIpAddress) ??
     findValueByKeys(payload, IP_KEYS, isValidIpAddress) ??
+    findMatchingValue(preferredSource, isValidIpAddress) ??
     findMatchingValue(payload, isValidIpAddress) ??
     fallbackIp;
 
   const rawMac =
+    findValueByKeys(preferredSource, MAC_KEYS, isValidMacAddress) ??
     findValueByKeys(payload, MAC_KEYS, isValidMacAddress) ??
+    findMatchingValue(preferredSource, isValidMacAddress) ??
     findMatchingValue(payload, isValidMacAddress) ??
     '';
 
+  const wakeAddress =
+    findValueByKeys(preferredSource, WAKE_ADDRESS_KEYS, isValidIpAddress) ??
+    findValueByKeys(payload, WAKE_ADDRESS_KEYS, isValidIpAddress) ??
+    (getSuggestedWakeAddress(pingIp) || pingIp);
+
+  const wakePort =
+    findNumberByKeys(preferredSource, WAKE_PORT_KEYS) ??
+    findNumberByKeys(payload, WAKE_PORT_KEYS) ??
+    DEFAULT_WAKE_PORT;
+
   const name =
+    findValueByKeys(preferredSource, NAME_KEYS) ??
     findValueByKeys(payload, NAME_KEYS) ??
     `WakeMATE ${pingIp}`;
 
@@ -177,7 +319,8 @@ const extractCompanionFields = (info: unknown, fallbackIp: string) => {
     name,
     pingIp,
     mac: rawMac ? normalizeMacAddress(rawMac) : '',
-    wakeAddress: getSuggestedWakeAddress(pingIp) || pingIp,
+    wakeAddress,
+    wakePort,
   };
 };
 
@@ -291,7 +434,8 @@ export default function AddDeviceScreen() {
         name: discoveredCompanion.deviceName || `WakeMATE ${savedCompanionIp}`,
         pingIp: savedCompanionIp,
         mac: discoveredCompanion.macAddress || '',
-        wakeAddress: getSuggestedWakeAddress(savedCompanionIp) || savedCompanionIp,
+        wakeAddress: discoveredCompanion.wakeAddress || getSuggestedWakeAddress(savedCompanionIp) || savedCompanionIp,
+        wakePort: discoveredCompanion.wakePort ?? DEFAULT_WAKE_PORT,
       };
 
       try {
@@ -349,6 +493,17 @@ export default function AddDeviceScreen() {
         filledFields.push('wake address');
       }
 
+      const currentWakePort = sanitizeWakePort(wakePort, DEFAULT_WAKE_PORT);
+      if (
+        companionFields.wakePort !== null &&
+        companionFields.wakePort !== undefined &&
+        (wakePort.trim() === '' || currentWakePort === DEFAULT_WAKE_PORT) &&
+        companionFields.wakePort !== currentWakePort
+      ) {
+        setWakePort(String(companionFields.wakePort));
+        filledFields.push('wake port');
+      }
+
       const connectionNotes: string[] = [];
       if (hadDifferentServerIp) {
         connectionNotes.push(`Companion API connected at ${savedCompanionIp}.`);
@@ -367,7 +522,7 @@ export default function AddDeviceScreen() {
         pingIp: pingAddress.trim() || companionFields.pingIp,
         mac: mac.trim() || companionFields.mac,
         wakeAddress: wakeAddress.trim() || companionFields.wakeAddress,
-        wakePort: DEFAULT_WAKE_PORT,
+        wakePort: companionFields.wakePort,
       });
 
       if (shouldAttemptAutoSave && scannedDevice) {
@@ -426,7 +581,7 @@ export default function AddDeviceScreen() {
     } finally {
       setIsScanning(false);
     }
-  }, [mac, name, pingAddress, router, serverIp, serverToken, setServerIp, shouldAttemptAutoSave, wakeAddress]);
+  }, [mac, name, pingAddress, router, serverIp, serverToken, setServerIp, shouldAttemptAutoSave, wakeAddress, wakePort]);
 
   useEffect(() => {
     if (params.scan !== '1' || hasAutoScannedRef.current) {
