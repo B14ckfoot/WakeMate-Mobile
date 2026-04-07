@@ -596,79 +596,146 @@ export default function DeviceControlScreen() {
     </View>
   );
 
-  const renderKeysPanel = () => (
-    <View style={[styles.panelCard, styles.keysPanelCard]}>
-      <Text style={styles.panelEyebrow}>Shortcuts</Text>
-      <Text style={styles.panelTitle}>Quick Keys</Text>
+  const renderKeysPanel = () => {
+    const directionalLabels = new Set(['Up', 'Left', 'Down', 'Right']);
+    const navigationUtilityKeys = NAVIGATION_KEYS.filter((item) => !directionalLabels.has(item.label));
+    const upKey = NAVIGATION_KEYS.find((item) => item.label === 'Up');
+    const leftKey = NAVIGATION_KEYS.find((item) => item.label === 'Left');
+    const downKey = NAVIGATION_KEYS.find((item) => item.label === 'Down');
+    const rightKey = NAVIGATION_KEYS.find((item) => item.label === 'Right');
 
-      <ScrollView
-        style={styles.keysScroll}
-        contentContainerStyle={styles.keysScrollContent}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.keySection}>
-          <Text style={styles.keySectionTitle}>Modifiers</Text>
-          <View style={styles.modifierRow}>
-            {MODIFIER_KEYS.map((item) => (
-              <TouchableOpacity
-                key={item.label}
-                style={styles.modifierKey}
-                onPress={() => handleSpecialKey(item.keyValue, item.label)}
-              >
-                <Text style={styles.modifierKeyText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
+    return (
+      <View style={[styles.panelCard, styles.keysPanelCard]}>
+          <View style={styles.keysHeader}>
+            <View style={styles.keysHeaderCopy}>
+              <Text style={styles.panelEyebrow}>Shortcuts</Text>
+              <Text style={styles.panelTitle}>Quick Keys</Text>
+            </View>
+            <Text style={styles.keysHeaderHint}>Tap once</Text>
           </View>
-        </View>
 
-        <View style={styles.keySection}>
-          <Text style={styles.keySectionTitle}>Navigation</Text>
-          <View style={styles.keyGrid}>
-            {NAVIGATION_KEYS.map((item) => (
-              <TouchableOpacity
-                key={item.label}
-                style={styles.gridKey}
-                onPress={() => handleSpecialKey(item.keyValue, item.label)}
-              >
-                <Text style={styles.gridKeyText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+          <ScrollView
+            style={styles.keysScroll}
+            contentContainerStyle={styles.keysScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={[styles.keySection, styles.keySurfaceCard]}>
+              <View style={styles.keySectionHeader}>
+                <Text style={styles.keySectionTitle}>Modifiers</Text>
+                <Text style={styles.keySectionMeta}>System</Text>
+              </View>
+              <View style={styles.modifierRow}>
+                {MODIFIER_KEYS.map((item) => (
+                  <TouchableOpacity
+                    key={item.label}
+                    style={styles.modifierKey}
+                    onPress={() => handleSpecialKey(item.keyValue, item.label)}
+                  >
+                    <Text style={styles.modifierKeyText}>{item.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
 
-        <View style={styles.keySection}>
-          <Text style={styles.keySectionTitle}>Combos</Text>
-          <View style={styles.comboWrap}>
-            {PRODUCTIVITY_SHORTCUTS.map((item) => (
-              <TouchableOpacity
-                key={item.label}
-                style={[styles.comboKey, item.wide && styles.comboKeyWide]}
-                onPress={() => handleSpecialKey(item.keyValue, item.label)}
-              >
-                <Text style={styles.comboKeyText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+            <View style={[styles.keySection, styles.keySurfaceCard]}>
+              <View style={styles.keySectionHeader}>
+                <Text style={styles.keySectionTitle}>Navigation</Text>
+                <Text style={styles.keySectionMeta}>Cursor + editing</Text>
+              </View>
+              <View style={styles.navigationLayout}>
+                <View style={styles.navigationGrid}>
+                  {navigationUtilityKeys.map((item) => (
+                    <TouchableOpacity
+                      key={item.label}
+                      style={styles.gridKey}
+                      onPress={() => handleSpecialKey(item.keyValue, item.label)}
+                    >
+                      <Text style={styles.gridKeyText}>{item.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
 
-        <View style={styles.keySection}>
-          <Text style={styles.keySectionTitle}>Function Row</Text>
-          <View style={styles.functionGrid}>
-            {FUNCTION_KEYS.map((item) => (
-              <TouchableOpacity
-                key={item.label}
-                style={styles.functionKey}
-                onPress={() => handleSpecialKey(item.keyValue, item.label)}
-              >
-                <Text style={styles.functionKeyText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      </ScrollView>
-    </View>
-  );
+                <View style={styles.navPad}>
+                  <View style={styles.navPadTopRow}>
+                    {upKey ? (
+                      <TouchableOpacity
+                        style={styles.navPadKey}
+                        onPress={() => handleSpecialKey(upKey.keyValue, upKey.label)}
+                      >
+                        <Text style={styles.navPadKeyText}>{upKey.label}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                  <View style={styles.navPadBottomRow}>
+                    {leftKey ? (
+                      <TouchableOpacity
+                        style={styles.navPadKey}
+                        onPress={() => handleSpecialKey(leftKey.keyValue, leftKey.label)}
+                      >
+                        <Text style={styles.navPadKeyText}>{leftKey.label}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {downKey ? (
+                      <TouchableOpacity
+                        style={[styles.navPadKey, styles.navPadKeyAccent]}
+                        onPress={() => handleSpecialKey(downKey.keyValue, downKey.label)}
+                      >
+                        <Text style={styles.navPadKeyText}>{downKey.label}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {rightKey ? (
+                      <TouchableOpacity
+                        style={styles.navPadKey}
+                        onPress={() => handleSpecialKey(rightKey.keyValue, rightKey.label)}
+                      >
+                        <Text style={styles.navPadKeyText}>{rightKey.label}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+            </View>
+
+            <View style={[styles.keySection, styles.keySurfaceCard]}>
+              <View style={styles.keySectionHeader}>
+                <Text style={styles.keySectionTitle}>Combos</Text>
+                <Text style={styles.keySectionMeta}>Workflow</Text>
+              </View>
+              <View style={styles.comboWrap}>
+                {PRODUCTIVITY_SHORTCUTS.map((item) => (
+                  <TouchableOpacity
+                    key={item.label}
+                    style={[styles.comboKey, item.wide && styles.comboKeyWide]}
+                    onPress={() => handleSpecialKey(item.keyValue, item.label)}
+                  >
+                    <Text style={styles.comboKeyText}>{item.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={[styles.keySection, styles.keySurfaceCard]}>
+              <View style={styles.keySectionHeader}>
+                <Text style={styles.keySectionTitle}>Function Row</Text>
+                <Text style={styles.keySectionMeta}>F1-F12</Text>
+              </View>
+              <View style={styles.functionGrid}>
+                {FUNCTION_KEYS.map((item) => (
+                  <TouchableOpacity
+                    key={item.label}
+                    style={styles.functionKey}
+                    onPress={() => handleSpecialKey(item.keyValue, item.label)}
+                  >
+                    <Text style={styles.functionKeyText}>{item.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          </ScrollView>
+      </View>
+    );
+  };
 
   const renderMediaPanel = () => (
     <View style={[styles.panelCard, styles.mediaPanelCard]}>
@@ -1518,76 +1585,163 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   keysPanelCard: {
-    maxHeight: 300,
-    paddingTop: 14,
-    gap: 10,
+    maxHeight: 286,
+    paddingTop: 12,
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  keysHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  keysHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  keysHeaderHint: {
+    color: '#89a8b3',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    paddingTop: 16,
   },
   keysScroll: {
-    maxHeight: 214,
+    maxHeight: 206,
   },
   keysScrollContent: {
-    gap: 12,
+    gap: 10,
     paddingBottom: 2,
   },
   keySection: {
-    gap: 8,
+    gap: 7,
+  },
+  keySurfaceCard: {
+    backgroundColor: '#131820',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.05)',
+    padding: 10,
+  },
+  keySectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   keySectionTitle: {
     color: '#a5f3fc',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 1.4,
+    letterSpacing: 1.3,
+  },
+  keySectionMeta: {
+    color: '#748895',
+    fontSize: 10,
+    fontWeight: '700',
   },
   modifierRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
+    justifyContent: 'space-between',
   },
   modifierKey: {
-    minWidth: 64,
-    minHeight: 38,
-    borderRadius: 14,
+    flexBasis: '23%',
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: 12,
     backgroundColor: '#272b35',
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
   modifierKeyText: {
     color: '#f5f6fb',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   keyGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
+    justifyContent: 'space-between',
+  },
+  navigationLayout: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 10,
+  },
+  navigationGrid: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    justifyContent: 'space-between',
   },
   gridKey: {
-    width: '21.5%',
-    minWidth: 60,
-    minHeight: 40,
-    borderRadius: 14,
+    flexBasis: '31.5%',
+    minWidth: 0,
+    minHeight: 36,
+    borderRadius: 12,
     backgroundColor: '#272b35',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 4,
   },
   gridKeyText: {
     color: '#ffffff',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
+  },
+  navPad: {
+    width: 104,
+    borderRadius: 16,
+    backgroundColor: '#10171d',
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.08)',
+    padding: 8,
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  navPadTopRow: {
+    alignItems: 'center',
+  },
+  navPadBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  navPadKey: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 12,
+    backgroundColor: '#22313b',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  navPadKeyAccent: {
+    backgroundColor: '#155e75',
+  },
+  navPadKeyText: {
+    color: '#ecfeff',
+    fontSize: 10,
+    fontWeight: '800',
   },
   comboWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   comboKey: {
-    minHeight: 44,
-    borderRadius: 16,
+    minHeight: 36,
+    borderRadius: 12,
     backgroundColor: '#16313c',
-    paddingHorizontal: 14,
+    paddingHorizontal: 11,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1596,26 +1750,28 @@ const styles = StyleSheet.create({
   },
   comboKeyText: {
     color: '#ecfeff',
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '700',
   },
   functionGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 6,
+    justifyContent: 'space-between',
   },
   functionKey: {
-    width: '22%',
-    minWidth: 68,
-    minHeight: 42,
-    borderRadius: 15,
+    flexBasis: '23%',
+    minWidth: 0,
+    minHeight: 34,
+    borderRadius: 12,
     backgroundColor: '#252934',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 4,
   },
   functionKeyText: {
     color: '#f5f6fb',
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: '700',
   },
   mediaPanelCard: {

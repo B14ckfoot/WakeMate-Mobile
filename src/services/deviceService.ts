@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
+import axios, { isAxiosError } from 'axios';
 import dgram from 'react-native-udp';
 import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
@@ -29,7 +29,7 @@ type WakeRequestOptions = {
   wakeAddress?: string;
   wakePort?: number;
 };
-type CompanionDiscoveryInfo = {
+export type CompanionDiscoveryInfo = {
   serverIp: string;
   deviceName: string;
   macAddress: string | null;
@@ -131,6 +131,67 @@ const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null
   };
 };
 
+const parseHealthDiscoveryResponse = (payload: unknown, serverIp: string): CompanionDiscoveryInfo | null => {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const nestedData = isRecord(payload.data) ? payload.data : null;
+  const source = nestedData ?? payload;
+  const deviceName =
+    toCandidateString(source.device_name) ??
+    toCandidateString(source.deviceName) ??
+    `WakeMATE ${serverIp}`;
+  const version = toCandidateString(source.version) ?? toCandidateString(payload.version);
+
+  if (!deviceName) {
+    return null;
+  }
+
+  return {
+    serverIp,
+    deviceName,
+    macAddress: null,
+    wakeAddress: null,
+    wakePort: null,
+    apiPort: API_PORT,
+    version,
+  };
+};
+
+const mergeCompanionDiscoveries = (discoveries: CompanionDiscoveryInfo[]): CompanionDiscoveryInfo[] => {
+  const byIp = new Map<string, CompanionDiscoveryInfo>();
+
+  for (const discovery of discoveries) {
+    const serverIp = discovery.serverIp.trim();
+    if (!serverIp) {
+      continue;
+    }
+
+    const existing = byIp.get(serverIp);
+    if (!existing) {
+      byIp.set(serverIp, discovery);
+      continue;
+    }
+
+    byIp.set(serverIp, {
+      ...existing,
+      deviceName: existing.deviceName.startsWith('WakeMATE ') && !discovery.deviceName.startsWith('WakeMATE ')
+        ? discovery.deviceName
+        : existing.deviceName,
+      macAddress: existing.macAddress ?? discovery.macAddress,
+      wakeAddress: existing.wakeAddress ?? discovery.wakeAddress,
+      wakePort: existing.wakePort ?? discovery.wakePort,
+      apiPort: existing.apiPort || discovery.apiPort,
+      version: existing.version ?? discovery.version,
+    });
+  }
+
+  return Array.from(byIp.values()).sort((left, right) =>
+    left.deviceName.localeCompare(right.deviceName, undefined, { sensitivity: 'base' })
+  );
+};
+
 const closeDiscoverySocket = (socket: { close: (callback?: (...args: unknown[]) => void) => unknown } | null) => {
   if (!socket) {
     return;
@@ -143,39 +204,42 @@ const closeDiscoverySocket = (socket: { close: (callback?: (...args: unknown[]) 
   }
 };
 
-const discoverCompanionViaUdp = async (): Promise<CompanionDiscoveryInfo | null> =>
+const discoverCompanionsViaUdp = async (): Promise<CompanionDiscoveryInfo[]> =>
   new Promise((resolve) => {
     let socket: ReturnType<typeof dgram.createSocket> | null = null;
-    let settled = false;
+    let finished = false;
+    const discoveries = new Map<string, CompanionDiscoveryInfo>();
 
-    const finish = (result: CompanionDiscoveryInfo | null) => {
-      if (settled) {
+    const finish = () => {
+      if (finished) {
         return;
       }
 
-      settled = true;
+      finished = true;
       clearTimeout(timeoutId);
       closeDiscoverySocket(socket);
-      resolve(result);
+      resolve(mergeCompanionDiscoveries(Array.from(discoveries.values())));
     };
 
-    const timeoutId = setTimeout(() => finish(null), UDP_DISCOVERY_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => finish(), UDP_DISCOVERY_TIMEOUT_MS);
 
     try {
       socket = dgram.createSocket({ type: 'udp4' });
     } catch (error) {
       console.warn('UDP discovery unavailable, falling back to HTTP scan:', error);
-      finish(null);
+      finish();
       return;
     }
 
-    socket.once('error', () => finish(null));
-    socket.once('message', (message: { toString: (encoding?: string) => string }) => {
+    socket.once('error', () => finish());
+    socket.on('message', (message: { toString: (encoding?: string) => string }) => {
       try {
         const parsed = parseDiscoveryResponse(JSON.parse(message.toString('utf8')));
-        finish(parsed);
+        if (parsed) {
+          discoveries.set(parsed.serverIp, parsed);
+        }
       } catch {
-        finish(null);
+        // Ignore malformed discovery packets while waiting for the rest.
       }
     });
 
@@ -190,19 +254,19 @@ const discoverCompanionViaUdp = async (): Promise<CompanionDiscoveryInfo | null>
           GLOBAL_BROADCAST_ADDRESS,
           (error?: Error) => {
             if (error) {
-              finish(null);
+              finish();
             }
           }
         );
       } catch {
-        finish(null);
+        finish();
       }
     });
 
     try {
       socket.bind(0, '0.0.0.0');
     } catch {
-      finish(null);
+      finish();
     }
   });
 
@@ -227,7 +291,7 @@ const chunkArray = <T,>(items: T[], size: number): T[][] => {
   return chunks;
 };
 
-const isReachableCompanionServer = async (ip: string): Promise<boolean> => {
+const fetchCompanionHealthDiscovery = async (ip: string): Promise<CompanionDiscoveryInfo | null> => {
   try {
     const response = await axios.get(`${buildBaseUrl(ip)}/v1/health`, {
       timeout: DISCOVERY_TIMEOUT_MS,
@@ -236,34 +300,35 @@ const isReachableCompanionServer = async (ip: string): Promise<boolean> => {
       },
     });
 
-    return response.data?.ok === true && response.data?.data?.status === 'online';
+    if (response.data?.ok !== true || response.data?.data?.status !== 'online') {
+      return null;
+    }
+
+    return parseHealthDiscoveryResponse(response.data, ip);
   } catch {
-    return false;
+    return null;
   }
 };
 
-const scanSubnetForCompanion = async (subnet: string): Promise<string | null> => {
+const scanSubnetForCompanions = async (subnet: string): Promise<CompanionDiscoveryInfo[]> => {
   const remainingHosts = Array.from({ length: 254 }, (_, index) => index + 1).filter(
     (host) => !PRIORITY_HOSTS.includes(host)
   );
   const hostOrder = [...PRIORITY_HOSTS, ...remainingHosts];
+  const discoveries: CompanionDiscoveryInfo[] = [];
 
   for (const batch of chunkArray(hostOrder, DISCOVERY_BATCH_SIZE)) {
     const results = await Promise.all(
       batch.map(async (host) => {
         const ip = `${subnet}${host}`;
-        const reachable = await isReachableCompanionServer(ip);
-        return reachable ? ip : null;
+        return fetchCompanionHealthDiscovery(ip);
       })
     );
 
-    const foundIp = results.find((ip): ip is string => Boolean(ip));
-    if (foundIp) {
-      return foundIp;
-    }
+    discoveries.push(...results.filter((discovery): discovery is CompanionDiscoveryInfo => Boolean(discovery)));
   }
 
-  return null;
+  return mergeCompanionDiscoveries(discoveries);
 };
 
 const normalizeNumber = (value: unknown, fallback = 0): number => {
@@ -283,14 +348,28 @@ const buildAuthHeaders = (token: string | null): Record<string, string> => {
   return headers;
 };
 
-const isAuthFailureStatus = (status: number | undefined): boolean => status === 401 || status === 403;
+const isUnauthorizedStatus = (status: number | undefined): boolean => status === 401;
+
+const extractCompanionErrorMessage = (payload: unknown): string | null => {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const message = toCandidateString(payload.message) ?? toCandidateString(payload.error);
+  return message ?? null;
+};
 
 const normalizeCompanionRequestError = (error: unknown, fallbackMessage: string): Error => {
-  if (axios.isAxiosError(error)) {
+  if (isAxiosError(error)) {
     const status = error.response?.status;
+    const companionMessage = extractCompanionErrorMessage(error.response?.data);
 
-    if (isAuthFailureStatus(status)) {
+    if (isUnauthorizedStatus(status)) {
       return new Error(COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE);
+    }
+
+    if (companionMessage) {
+      return new Error(companionMessage);
     }
 
     if (typeof status === 'number') {
@@ -528,44 +607,36 @@ const deviceService = {
   },
 
   async discoverCompanion(): Promise<CompanionDiscoveryInfo | null> {
-    const udpDiscovery = await discoverCompanionViaUdp();
-    if (udpDiscovery) {
-      await this.setServerAddress(udpDiscovery.serverIp);
-      return udpDiscovery;
+    const discoveries = await this.discoverCompanions();
+    const firstDiscovery = discoveries[0] ?? null;
+
+    if (firstDiscovery) {
+      await this.setServerAddress(firstDiscovery.serverIp);
     }
 
-    const storedIp = await this.getServerAddress();
+    return firstDiscovery;
+  },
 
-    if (storedIp?.trim() && await isReachableCompanionServer(storedIp.trim())) {
-      return {
-        serverIp: storedIp.trim(),
-        deviceName: `WakeMATE ${storedIp.trim()}`,
-        macAddress: null,
-        wakeAddress: null,
-        wakePort: null,
-        apiPort: API_PORT,
-        version: null,
-      };
-    }
+  async discoverCompanions(): Promise<CompanionDiscoveryInfo[]> {
+    const discoveries: CompanionDiscoveryInfo[] = [];
+    const udpDiscoveries = await discoverCompanionsViaUdp();
 
-    for (const subnet of DISCOVERY_SUBNETS) {
-      const foundIp = await scanSubnetForCompanion(subnet);
+    discoveries.push(...udpDiscoveries);
 
-      if (foundIp) {
-        await this.setServerAddress(foundIp);
-        return {
-          serverIp: foundIp,
-          deviceName: `WakeMATE ${foundIp}`,
-          macAddress: null,
-          wakeAddress: null,
-          wakePort: null,
-          apiPort: API_PORT,
-          version: null,
-        };
+    const storedIp = normalizeStoredValue(await this.getServerAddress());
+    if (storedIp) {
+      const storedDiscovery = await fetchCompanionHealthDiscovery(storedIp);
+      if (storedDiscovery) {
+        discoveries.push(storedDiscovery);
       }
     }
 
-    return null;
+    for (const subnet of DISCOVERY_SUBNETS) {
+      const subnetDiscoveries = await scanSubnetForCompanions(subnet);
+      discoveries.push(...subnetDiscoveries);
+    }
+
+    return mergeCompanionDiscoveries(discoveries);
   },
 
   async discoverCompanionServer(): Promise<string | null> {
@@ -585,6 +656,25 @@ const deviceService = {
       return response.data;
     } catch (error) {
       throw normalizeCompanionRequestError(error, 'Unable to verify the pairing token with the companion.');
+    }
+  },
+
+  async activatePairedControls(serverIp?: string, tokenOverride?: string | null): Promise<any> {
+    const targetIp = await resolveTargetIp(serverIp);
+    const token = normalizeStoredValue(tokenOverride) ?? await requireServerToken();
+    try {
+      const response = await axios.post(
+        `${buildBaseUrl(targetIp)}/v1/pairing/activate`,
+        {},
+        {
+          timeout: 5000,
+          headers: buildAuthHeaders(token),
+        }
+      );
+
+      return response.data;
+    } catch (error) {
+      throw normalizeCompanionRequestError(error, 'Unable to enable remote controls for this paired computer.');
     }
   },
 

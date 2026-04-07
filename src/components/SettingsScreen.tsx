@@ -172,6 +172,29 @@ export default function SettingsScreen() {
     }, [loadData])
   );
 
+  const persistConnectionSettings = useCallback(async (nextServerIp: string, nextServerToken: string) => {
+    await Promise.all([
+      deviceService.setServerAddress(nextServerIp),
+      deviceService.setServerToken(nextServerToken),
+    ]);
+
+    setServerIp(nextServerIp);
+    setServerToken(nextServerToken);
+  }, [setServerIp, setServerToken]);
+
+  const pairAndEnableRemoteControls = useCallback(async (nextServerIp: string, nextServerToken: string) => {
+    await persistConnectionSettings(nextServerIp, nextServerToken);
+
+    const connected = await testConnection(nextServerIp, nextServerToken);
+    if (!connected) {
+      return false;
+    }
+
+    await deviceService.activatePairedControls(nextServerIp, nextServerToken);
+    await testConnection(nextServerIp, nextServerToken);
+    return true;
+  }, [persistConnectionSettings, testConnection]);
+
   const handleUpdateServerConnection = async () => {
     const nextServerIp = serverIpInput.trim();
     const nextServerToken = serverTokenInput.trim();
@@ -186,16 +209,25 @@ export default function SettingsScreen() {
       return;
     }
 
-    setServerIp(nextServerIp);
-    setServerToken(nextServerToken);
-
-    const connected = await testConnection(nextServerIp, nextServerToken);
-    if (connected) {
+    try {
       if (nextServerToken) {
-        Alert.alert('Success', 'Connected to the WakeMATE companion successfully');
-      } else {
+        const paired = await pairAndEnableRemoteControls(nextServerIp, nextServerToken);
+        if (paired) {
+          Alert.alert('Success', 'Connected to the WakeMATE companion and enabled remote controls for this computer.');
+        }
+        return;
+      }
+
+      await persistConnectionSettings(nextServerIp, nextServerToken);
+
+      const connected = await testConnection(nextServerIp, nextServerToken);
+      if (connected) {
         Alert.alert('Connected', 'The companion is reachable. Add the pairing token to enable commands.');
       }
+    } catch (error) {
+      console.error('Error updating companion connection:', error);
+      const message = error instanceof Error ? error.message : 'Failed to connect to the WakeMATE companion.';
+      Alert.alert('Connection Error', message);
     }
   };
 
@@ -247,7 +279,7 @@ export default function SettingsScreen() {
   }, [cameraPermission?.granted, requestCameraPermission]);
 
   const handleTokenQrScanned = useCallback(
-    ({ data }: { data: string }) => {
+    async ({ data }: { data: string }) => {
       if (tokenScanLockedRef.current) {
         return;
       }
@@ -265,11 +297,51 @@ export default function SettingsScreen() {
       }
 
       setServerTokenInput(token);
-      setTokenScanNotice('Pairing token scanned. Save and Test when you are ready.');
-      setScannerError(null);
       setScannerVisible(false);
+      setScannerError(null);
+
+      let nextServerIp = serverIpInput.trim();
+
+      if (!isValidIpAddress(nextServerIp)) {
+        try {
+          const discoveredServerIp = await deviceService.discoverCompanionServer();
+          if (discoveredServerIp && isValidIpAddress(discoveredServerIp)) {
+            nextServerIp = discoveredServerIp;
+            setServerIpInput(discoveredServerIp);
+          }
+        } catch (error) {
+          console.error('Error discovering companion during QR pairing:', error);
+        }
+      }
+
+      if (!isValidIpAddress(nextServerIp)) {
+        setTokenScanNotice('Pairing token scanned. Add or confirm the companion IP to finish enabling remote controls automatically.');
+        return;
+      }
+
+      try {
+        setTokenScanNotice('Pairing token scanned. Enabling remote controls for this computer...');
+        const paired = await pairAndEnableRemoteControls(nextServerIp, token);
+
+        if (paired) {
+          setTokenScanNotice('Pairing complete. Remote controls are now enabled for this computer.');
+          Alert.alert('Pairing Complete', 'Remote controls are now enabled for this computer.');
+          return;
+        }
+
+        setTokenScanNotice('Pairing token scanned, but the companion could not be reached yet. Check the saved IP and try again.');
+      } catch (error) {
+        console.error('Error enabling paired controls after QR scan:', error);
+        const message = error instanceof Error
+          ? error.message
+          : 'The token was saved, but remote controls could not be enabled automatically.';
+        setTokenScanNotice('Pairing token scanned, but remote controls could not be enabled automatically.');
+        Alert.alert('Pairing Incomplete', message);
+      }
+
+      setScannerError(null);
     },
-    []
+    [pairAndEnableRemoteControls, serverIpInput]
   );
 
   const handleSaveEdit = async () => {

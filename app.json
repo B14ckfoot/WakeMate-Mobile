@@ -9,6 +9,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "appleTeamId": "NHGT3Q6R85",
       "bundleIdentifier": "com.anonymous.wakematemobile",
       "entitlements": {
         "com.apple.security.application-groups": [
