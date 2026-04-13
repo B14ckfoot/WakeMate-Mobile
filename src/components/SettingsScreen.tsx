@@ -324,8 +324,9 @@ export default function SettingsScreen() {
         const paired = await pairAndEnableRemoteControls(nextServerIp, token);
 
         if (paired) {
-          setTokenScanNotice('Pairing complete. Remote controls are now enabled for this computer.');
-          Alert.alert('Pairing Complete', 'Remote controls are now enabled for this computer.');
+          setTokenScanNotice(null);
+          tokenScanLockedRef.current = false;
+          router.back();
           return;
         }
 
@@ -341,7 +342,7 @@ export default function SettingsScreen() {
 
       setScannerError(null);
     },
-    [pairAndEnableRemoteControls, serverIpInput]
+    [pairAndEnableRemoteControls, router, serverIpInput]
   );
 
   const handleSaveEdit = async () => {

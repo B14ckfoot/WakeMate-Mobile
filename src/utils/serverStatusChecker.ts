@@ -1,6 +1,7 @@
 const AUTH_HEADER = 'x-wakemate-token';
+const LOCAL_CONNECTION_TIMEOUT_MS = 1500;
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 3000): Promise<Response> {
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = LOCAL_CONNECTION_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -58,7 +59,7 @@ export async function pingServer(ip: string, port: number = 7777): Promise<{
       if (error.name === 'AbortError') {
         return {
           success: false,
-          message: 'Connection timed out after 3 seconds',
+          message: 'Connection timed out after 1.5 seconds',
         };
       }
 
@@ -131,7 +132,7 @@ export async function testCommandEndpoint(
       if (error.name === 'AbortError') {
         return {
           success: false,
-          message: 'Pairing check timed out after 3 seconds',
+          message: 'Pairing check timed out after 1.5 seconds',
         };
       }
 

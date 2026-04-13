@@ -2,6 +2,8 @@ import React, { createContext, useCallback, useEffect, useContext, useState, Rea
 import deviceService from '../services/deviceService';
 import { pingServer, testCommandEndpoint, runDiagnostics } from '../utils/serverStatusChecker';
 
+const DEFAULT_COMPANION_PORT = 7777;
+
 interface ServerContextType {
   serverIp: string;
   setServerIp: (ip: string) => void;
@@ -53,6 +55,20 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     loadConnectionSettings();
   }, []);
 
+  const resolveConnectionPort = useCallback(async (nextIp: string): Promise<number> => {
+    const trimmedIp = nextIp.trim();
+    const [savedIp, savedPort] = await Promise.all([
+      deviceService.getServerAddress(),
+      deviceService.getServerPort(),
+    ]);
+
+    if (savedIp?.trim() === trimmedIp && savedPort) {
+      return savedPort;
+    }
+
+    return DEFAULT_COMPANION_PORT;
+  }, []);
+
   const testConnection = useCallback(async (nextIp: string = serverIp, nextToken: string = serverToken): Promise<boolean> => {
     const trimmedServerIp = nextIp.trim();
     const trimmedServerToken = nextToken.trim();
@@ -68,8 +84,9 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
     try {
       setConnectionError(null);
+      const targetPort = await resolveConnectionPort(trimmedServerIp);
 
-      const pingResult = await pingServer(trimmedServerIp);
+      const pingResult = await pingServer(trimmedServerIp, targetPort);
       if (!pingResult.success) {
         setIsConnected(false);
         setConnectionError(pingResult.message);
@@ -84,7 +101,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         return true;
       }
 
-      const pairingResult = await testCommandEndpoint(trimmedServerIp, trimmedServerToken);
+      const pairingResult = await testCommandEndpoint(trimmedServerIp, trimmedServerToken, targetPort);
       if (pairingResult.success) {
         setIsConnected(true);
         setConnectionError(null);
@@ -113,7 +130,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
       return false;
     }
-  }, [serverIp, serverToken]);
+  }, [resolveConnectionPort, serverIp, serverToken]);
 
   useEffect(() => {
     const syncConnectionSettings = async () => {
@@ -152,7 +169,8 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
 
     try {
-      const results = await runDiagnostics(serverIp, serverToken || undefined);
+      const targetPort = await resolveConnectionPort(serverIp);
+      const results = await runDiagnostics(serverIp, serverToken || undefined, targetPort);
       setIsConnected(results.overall);
 
       if (!results.overall) {

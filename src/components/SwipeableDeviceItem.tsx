@@ -13,12 +13,14 @@ import { useRouter } from 'expo-router';
 interface SwipeableDeviceItemProps {
   device: Device;
   onDelete: (id: string) => void;
+  onPress?: (device: Device) => void;
   onLongPress?: (device: Device) => void;
 }
 
 const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({ 
   device, 
   onDelete,
+  onPress,
   onLongPress 
 }) => {
   const router = useRouter();
@@ -69,6 +71,11 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
     // Only navigate if the card isn't swiped open
     const currentValue = translateXValue.current;
     if (currentValue === 0) {
+      if (onPress) {
+        onPress(device);
+        return;
+      }
+
       router.push(`/devices/${device.id}`);
     } else {
       // Reset swipe position if swiped open and tapped

@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
   Alert,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -14,7 +17,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useKeepAwake } from 'expo-keep-awake';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   ArrowLeft,
   ChevronDown,
@@ -36,6 +39,7 @@ import {
   SkipBack,
   SkipForward,
   VolumeX,
+  X,
 } from 'lucide-react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
@@ -46,20 +50,50 @@ import {
   State,
 } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Device } from '../../../src/types/device';
+import { VolumeManager } from 'react-native-volume-manager';
+import { Device, DevicePlatform } from '../../../src/types/device';
 import deviceService from '../../../src/services/deviceService';
+import {
+  getPrimaryShortcutModifier,
+  inferDevicePlatformFromMetadata,
+  normalizeDevicePlatform,
+} from '../../../src/utils/devicePlatform';
 
 type ControlTab = 'mouse' | 'keyboard' | 'keys' | 'media' | 'power';
 type FeedbackTone = 'info' | 'success' | 'warning';
 type ActionFeedback = { message: string; tone: FeedbackTone };
 type LoadOptions = { showLoader?: boolean; refreshStatus?: boolean };
 type QuickKey = { label: string; keyValue: string; wide?: boolean };
+type KeyboardAccessoryMode = 'modifiers' | 'functions' | null;
+type ControlSettings = {
+  trackingSpeed: number;
+  scrollingSpeed: number;
+  disableSleep: boolean;
+  useVolumeButtons: boolean;
+};
 
 const TOUCHPAD_SENSITIVITY = 1.2;
 const TOUCHPAD_NOISE_THRESHOLD = 0.1;
+const TOUCHPAD_SCROLL_STEP_PX = 18;
+const TOUCHPAD_DRAG_HOLD_MS = 220;
+const TOUCHPAD_TAP_MAX_DURATION_MS = 250;
+const TOUCHPAD_TAP_MAX_DISTANCE = 10;
+const SCROLL_TRACK_PADDING_Y = 10;
+const SCROLL_THUMB_HEIGHT = 78;
+const TRACKING_SPEED_MIN = 0.45;
+const TRACKING_SPEED_MAX = 2.6;
+const SCROLL_SPEED_MIN = 0.45;
+const SCROLL_SPEED_MAX = 2.4;
+const CONTROL_SETTINGS_STORAGE_KEY = 'deviceControlRemoteSettings';
+const CONTROL_KEEP_AWAKE_TAG = 'DeviceControlRemote';
+
+type TouchpadMode = 'pointer' | 'scroll';
+type TwoFingerTapCandidate = {
+  startedAt: number;
+  maxDistance: number;
+};
 
 const TAB_ITEMS = [
-  { key: 'mouse' as const, label: 'Trackpad', icon: MousePointer },
   { key: 'keyboard' as const, label: 'Keyboard', icon: KeyboardIcon },
   { key: 'keys' as const, label: 'Keys', icon: Command },
   { key: 'media' as const, label: 'Media', icon: Music },
@@ -69,16 +103,6 @@ const TAB_ITEMS = [
 const KEYBOARD_QUICK_KEYS: QuickKey[] = [
   { label: 'Esc', keyValue: 'esc' },
   { label: 'Tab', keyValue: 'tab' },
-  { label: 'Enter', keyValue: 'enter' },
-  { label: 'Backspace', keyValue: 'backspace', wide: true },
-  { label: 'Space', keyValue: 'space' },
-];
-
-const MODIFIER_KEYS: QuickKey[] = [
-  { label: 'Shift', keyValue: 'shift' },
-  { label: 'Ctrl', keyValue: 'ctrl' },
-  { label: 'Win', keyValue: 'win' },
-  { label: 'Alt', keyValue: 'alt' },
 ];
 
 const NAVIGATION_KEYS: QuickKey[] = [
@@ -101,18 +125,99 @@ const FUNCTION_KEYS: QuickKey[] = Array.from({ length: 12 }, (_, index) => ({
   keyValue: `f${index + 1}`,
 }));
 
-const PRODUCTIVITY_SHORTCUTS: QuickKey[] = [
-  { label: 'Ctrl+C', keyValue: 'ctrl+c' },
-  { label: 'Ctrl+V', keyValue: 'ctrl+v' },
-  { label: 'Ctrl+Z', keyValue: 'ctrl+z' },
-  { label: 'Alt+Tab', keyValue: 'alt+tab' },
-  { label: 'Win+D', keyValue: 'win+d' },
-  { label: 'Ctrl+Alt+Delete', keyValue: 'ctrl+alt+delete', wide: true },
-];
+const DEFAULT_CONTROL_SETTINGS: ControlSettings = {
+  trackingSpeed: 0.52,
+  scrollingSpeed: 0.48,
+  disableSleep: true,
+  useVolumeButtons: false,
+};
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const scaleSetting = (value: number, min: number, max: number) => min + clamp(value, 0, 1) * (max - min);
+
+type SettingsSliderProps = {
+  label: string;
+  description: string;
+  value: number;
+  onChange: (value: number) => void;
+};
+
+const SettingsSlider: React.FC<SettingsSliderProps> = ({ label, description, value, onChange }) => {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const thumbSize = 22;
+  const clampedValue = clamp(value, 0, 1);
+  const thumbLeft = trackWidth > thumbSize ? clampedValue * (trackWidth - thumbSize) : 0;
+
+  const updateValueFromLocation = (locationX: number) => {
+    if (trackWidth <= 0) {
+      return;
+    }
+
+    onChange(clamp(locationX / trackWidth, 0, 1));
+  };
+
+  return (
+    <View style={styles.settingBlock}>
+      <View style={styles.settingBlockHeader}>
+        <Text style={styles.settingLabel}>{label}</Text>
+        <Text style={styles.settingValue}>{Math.round(clampedValue * 100)}%</Text>
+      </View>
+      <Text style={styles.settingDescription}>{description}</Text>
+      <View
+        style={styles.sliderTrack}
+        onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={() => true}
+        onResponderGrant={(event) => updateValueFromLocation(event.nativeEvent.locationX)}
+        onResponderMove={(event) => updateValueFromLocation(event.nativeEvent.locationX)}
+      >
+        <View pointerEvents="none" style={[styles.sliderFill, { width: `${clampedValue * 100}%` }]} />
+        <View pointerEvents="none" style={[styles.sliderThumb, { left: thumbLeft }]} />
+      </View>
+      <View style={styles.sliderLabels}>
+        <Text style={styles.sliderLabelText}>Slow</Text>
+        <Text style={styles.sliderLabelText}>Fast</Text>
+      </View>
+    </View>
+  );
+};
+
+const getModifierKeys = (platform: DevicePlatform): QuickKey[] =>
+  platform === 'mac'
+    ? [
+        { label: 'Shift', keyValue: 'shift' },
+        { label: 'Command', keyValue: 'command' },
+        { label: 'Option', keyValue: 'option' },
+        { label: 'Control', keyValue: 'control' },
+      ]
+    : [
+        { label: 'Shift', keyValue: 'shift' },
+        { label: 'Ctrl', keyValue: 'ctrl' },
+        { label: 'Win', keyValue: 'win' },
+        { label: 'Alt', keyValue: 'alt' },
+      ];
+
+const getProductivityShortcuts = (platform: DevicePlatform): QuickKey[] =>
+  platform === 'mac'
+    ? [
+        { label: 'Command+C', keyValue: 'command+c' },
+        { label: 'Command+V', keyValue: 'command+v' },
+        { label: 'Command+Z', keyValue: 'command+z' },
+        { label: 'Command+Tab', keyValue: 'command+tab' },
+        { label: 'Command+Space', keyValue: 'command+space' },
+        { label: 'Option+Shift', keyValue: 'option+shift', wide: true },
+      ]
+    : [
+        { label: 'Ctrl+C', keyValue: 'ctrl+c' },
+        { label: 'Ctrl+V', keyValue: 'ctrl+v' },
+        { label: 'Ctrl+Z', keyValue: 'ctrl+z' },
+        { label: 'Alt+Tab', keyValue: 'alt+tab' },
+        { label: 'Win+D', keyValue: 'win+d' },
+        { label: 'Ctrl+Alt+Delete', keyValue: 'ctrl+alt+delete', wide: true },
+      ];
 
 export default function DeviceControlScreen() {
-  useKeepAwake();
-
   const params = useLocalSearchParams();
   const id = params.id as string;
   const router = useRouter();
@@ -122,29 +227,120 @@ export default function DeviceControlScreen() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<ControlTab>('mouse');
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isSettingsVisible, setIsSettingsVisible] = useState(false);
   const [keyboardText, setKeyboardText] = useState('');
   const [isSendingKeyboard, setIsSendingKeyboard] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [keyboardAccessoryMode, setKeyboardAccessoryMode] = useState<KeyboardAccessoryMode>(null);
+  const [controlSettings, setControlSettings] = useState<ControlSettings>(DEFAULT_CONTROL_SETTINGS);
+  const [hasLoadedControlSettings, setHasLoadedControlSettings] = useState(false);
   const [isDevicePickerOpen, setIsDevicePickerOpen] = useState(false);
   const [status, setStatus] = useState<'online' | 'offline'>('offline');
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
   const [feedback, setFeedback] = useState<ActionFeedback | null>(null);
   const [setupMessage, setSetupMessage] = useState<string | null>(null);
+  const [scrollThumbOffset, setScrollThumbOffset] = useState(0);
 
   const keyboardInputRef = useRef<TextInput>(null);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastMouseMoveErrorRef = useRef<string | null>(null);
+  const lastTouchpadCommandErrorRef = useRef<string | null>(null);
   const lastTouchpadTranslationRef = useRef({ x: 0, y: 0 });
   const pendingMouseMoveRef = useRef({ x: 0, y: 0 });
+  const pendingScrollRef = useRef(0);
   const mouseMoveRequestInFlightRef = useRef(false);
+  const dragHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dragActivationPendingRef = useRef(false);
+  const isDraggingRef = useRef(false);
+  const gestureModeRef = useRef<TouchpadMode>('pointer');
+  const twoFingerTapCandidateRef = useRef<TwoFingerTapCandidate | null>(null);
+  const touchpadHeightRef = useRef(0);
+  const scrollTrackHeightRef = useRef(0);
+  const lastScrollRailLocationYRef = useRef<number | null>(null);
+  const volumeListenerRef = useRef<{ remove: () => void } | null>(null);
+  const baselineVolumeRef = useRef(0.5);
+  const lastVolumeRef = useRef(0.5);
+  const isResettingVolumeRef = useRef(false);
+
+  const trackingSpeedMultiplier = scaleSetting(controlSettings.trackingSpeed, TRACKING_SPEED_MIN, TRACKING_SPEED_MAX);
+  const scrollingSpeedMultiplier = scaleSetting(controlSettings.scrollingSpeed, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
 
   useEffect(() => {
     return () => {
       if (feedbackTimeoutRef.current) {
         clearTimeout(feedbackTimeoutRef.current);
       }
+      if (dragHoldTimeoutRef.current) {
+        clearTimeout(dragHoldTimeoutRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadControlSettings = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(CONTROL_SETTINGS_STORAGE_KEY);
+        if (!stored || !isMounted) {
+          return;
+        }
+
+        const parsed = JSON.parse(stored) as Partial<ControlSettings>;
+        setControlSettings((current) => ({
+          trackingSpeed:
+            typeof parsed.trackingSpeed === 'number' ? clamp(parsed.trackingSpeed, 0, 1) : current.trackingSpeed,
+          scrollingSpeed:
+            typeof parsed.scrollingSpeed === 'number' ? clamp(parsed.scrollingSpeed, 0, 1) : current.scrollingSpeed,
+          disableSleep: typeof parsed.disableSleep === 'boolean' ? parsed.disableSleep : current.disableSleep,
+          useVolumeButtons:
+            typeof parsed.useVolumeButtons === 'boolean' ? parsed.useVolumeButtons : current.useVolumeButtons,
+        }));
+      } catch (error) {
+        console.warn('Failed to load device control settings:', error);
+      } finally {
+        if (isMounted) {
+          setHasLoadedControlSettings(true);
+        }
+      }
+    };
+
+    void loadControlSettings();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedControlSettings) {
+      return;
+    }
+
+    void AsyncStorage.setItem(CONTROL_SETTINGS_STORAGE_KEY, JSON.stringify(controlSettings)).catch((error) => {
+      console.warn('Failed to save device control settings:', error);
+    });
+  }, [controlSettings, hasLoadedControlSettings]);
+
+  useEffect(() => {
+    const syncKeepAwake = async () => {
+      try {
+        if (controlSettings.disableSleep) {
+          await activateKeepAwakeAsync(CONTROL_KEEP_AWAKE_TAG);
+          return;
+        }
+
+        await deactivateKeepAwake(CONTROL_KEEP_AWAKE_TAG);
+      } catch (error) {
+        console.warn('Failed to update device control keep-awake state:', error);
+      }
+    };
+
+    void syncKeepAwake();
+
+    return () => {
+      void deactivateKeepAwake(CONTROL_KEEP_AWAKE_TAG).catch(() => {});
+    };
+  }, [controlSettings.disableSleep]);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -194,10 +390,7 @@ export default function DeviceControlScreen() {
         setIsRefreshingStatus(true);
       }
 
-      const [devices, companionSetupError] = await Promise.all([
-        deviceService.getDevices(),
-        deviceService.getCompanionSetupError({ validateToken: true }),
-      ]);
+      const devices = await deviceService.getDevices();
       setSavedDevices(devices);
       const foundDevice = devices.find((entry) => entry.id === id);
       if (!foundDevice) {
@@ -206,20 +399,29 @@ export default function DeviceControlScreen() {
         return;
       }
 
-      let nextDevice = foundDevice;
-      if (refreshStatus) {
-        const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip);
-        const nextStatus = isOnline ? 'online' : 'offline';
-        if (nextStatus !== foundDevice.status) {
-          nextDevice = { ...foundDevice, status: nextStatus };
-          await deviceService.saveDevices(
-            devices.map((entry) => (entry.id === foundDevice.id ? nextDevice : entry))
-          );
-        }
+      setDevice(foundDevice);
+      setStatus(foundDevice.status);
+
+      if (showLoader) {
+        setLoading(false);
       }
 
-      setDevice(nextDevice);
-      setStatus(nextDevice.status);
+      const [companionSetupError, isOnline] = await Promise.all([
+        deviceService.getCompanionSetupError({ validateToken: true }),
+        refreshStatus ? deviceService.checkDeviceStatus(foundDevice.ip) : Promise.resolve(foundDevice.status === 'online'),
+      ]);
+
+      let nextDevice = foundDevice;
+      const nextStatus = isOnline ? 'online' : 'offline';
+      if (nextStatus !== foundDevice.status) {
+        nextDevice = { ...foundDevice, status: nextStatus };
+        setDevice(nextDevice);
+        setStatus(nextStatus);
+        await deviceService.saveDevices(
+          devices.map((entry) => (entry.id === foundDevice.id ? nextDevice : entry))
+        );
+      }
+
       setSetupMessage(companionSetupError);
     } catch (error) {
       console.error('Error loading device:', error);
@@ -267,20 +469,32 @@ export default function DeviceControlScreen() {
     [showFeedback, triggerHaptic]
   );
 
-  const handleMouseMoveError = useCallback((error: unknown) => {
-    const message = error instanceof Error ? error.message : 'Failed to move the cursor';
+  const handleTouchpadCommandError = useCallback((error: unknown) => {
+    const message = error instanceof Error ? error.message : 'Trackpad command failed';
 
-    if (lastMouseMoveErrorRef.current === message) {
+    if (lastTouchpadCommandErrorRef.current === message) {
       return;
     }
 
-    lastMouseMoveErrorRef.current = message;
+    lastTouchpadCommandErrorRef.current = message;
     triggerHaptic('error');
     showFeedback(message, 'warning');
   }, [showFeedback, triggerHaptic]);
 
   const resetTouchpadTracking = useCallback(() => {
     lastTouchpadTranslationRef.current = { x: 0, y: 0 };
+  }, []);
+
+  const clearDragHoldTimeout = useCallback(() => {
+    if (dragHoldTimeoutRef.current) {
+      clearTimeout(dragHoldTimeoutRef.current);
+      dragHoldTimeoutRef.current = null;
+    }
+  }, []);
+
+  const determineTouchpadMode = useCallback((y: number): TouchpadMode => {
+    void y;
+    return 'pointer';
   }, []);
 
   const flushPendingMouseMove = useCallback(() => {
@@ -302,9 +516,9 @@ export default function DeviceControlScreen() {
     deviceService
       .sendMouseMove(device.id, device.ip, dx, dy)
       .then(() => {
-        lastMouseMoveErrorRef.current = null;
+        lastTouchpadCommandErrorRef.current = null;
       })
-      .catch(handleMouseMoveError)
+      .catch(handleTouchpadCommandError)
       .finally(() => {
         mouseMoveRequestInFlightRef.current = false;
         if (
@@ -314,54 +528,280 @@ export default function DeviceControlScreen() {
           flushPendingMouseMove();
         }
       });
-  }, [device, handleMouseMoveError, setupMessage, status]);
+  }, [device, handleTouchpadCommandError, setupMessage, status]);
+
+  const flushPendingScroll = useCallback(() => {
+    if (!device || status !== 'online' || setupMessage) {
+      return;
+    }
+
+    const pendingScroll = pendingScrollRef.current;
+    const steps = Math.trunc(Math.abs(pendingScroll) / TOUCHPAD_SCROLL_STEP_PX);
+
+    if (steps === 0) {
+      return;
+    }
+
+    pendingScrollRef.current -= Math.sign(pendingScroll) * steps * TOUCHPAD_SCROLL_STEP_PX;
+
+    void deviceService
+      .sendScroll(device.id, device.ip, pendingScroll < 0 ? steps : -steps)
+      .then(() => {
+        lastTouchpadCommandErrorRef.current = null;
+      })
+      .catch(handleTouchpadCommandError);
+  }, [device, handleTouchpadCommandError, setupMessage, status]);
+
+  const getScrollThumbTravel = useCallback(() => {
+    const travel = scrollTrackHeightRef.current - SCROLL_TRACK_PADDING_Y * 2 - SCROLL_THUMB_HEIGHT;
+    return Math.max(0, travel);
+  }, []);
+
+  const updateScrollThumbOffset = useCallback((deltaY: number) => {
+    const maxTravel = getScrollThumbTravel() / 2;
+
+    if (maxTravel <= 0) {
+      return;
+    }
+
+    setScrollThumbOffset((current) => {
+      const next = current + deltaY;
+      return Math.max(-maxTravel, Math.min(maxTravel, next));
+    });
+  }, [getScrollThumbTravel]);
+
+  const handleScrollRailDelta = useCallback((deltaY: number) => {
+    if (!device || status !== 'online' || setupMessage) {
+      return;
+    }
+
+    if (Math.abs(deltaY) < TOUCHPAD_NOISE_THRESHOLD) {
+      return;
+    }
+
+    pendingScrollRef.current += deltaY * scrollingSpeedMultiplier;
+    updateScrollThumbOffset(deltaY);
+    flushPendingScroll();
+  }, [device, flushPendingScroll, scrollingSpeedMultiplier, setupMessage, status, updateScrollThumbOffset]);
+
+  const resetScrollRailDrag = useCallback(() => {
+    lastScrollRailLocationYRef.current = null;
+    setScrollThumbOffset(0);
+  }, []);
+
+  const handleTwoFingerTap = useCallback(() => {
+    if (!device || status !== 'online' || setupMessage) {
+      return;
+    }
+
+    triggerHaptic('light');
+    void deviceService
+      .sendMouseClick(device.id, device.ip, 'left')
+      .then(() => {
+        lastTouchpadCommandErrorRef.current = null;
+      })
+      .catch(handleTouchpadCommandError);
+  }, [device, handleTouchpadCommandError, setupMessage, status, triggerHaptic]);
+
+  const beginDragGesture = useCallback(() => {
+    if (!device || status !== 'online' || setupMessage || gestureModeRef.current === 'scroll' || isDraggingRef.current) {
+      return;
+    }
+
+    isDraggingRef.current = true;
+    dragActivationPendingRef.current = true;
+    triggerHaptic('light');
+
+    void deviceService
+      .sendMouseButtonDown(device.id, device.ip, 'left')
+      .then(() => {
+        lastTouchpadCommandErrorRef.current = null;
+      })
+      .catch((error) => {
+        isDraggingRef.current = false;
+        handleTouchpadCommandError(error);
+      })
+      .finally(() => {
+        dragActivationPendingRef.current = false;
+      });
+  }, [device, handleTouchpadCommandError, setupMessage, status, triggerHaptic]);
+
+  const releaseDragGesture = useCallback(() => {
+    clearDragHoldTimeout();
+
+    if (!device || status !== 'online' || setupMessage) {
+      isDraggingRef.current = false;
+      dragActivationPendingRef.current = false;
+      return;
+    }
+
+    if (!isDraggingRef.current && !dragActivationPendingRef.current) {
+      return;
+    }
+
+    isDraggingRef.current = false;
+    dragActivationPendingRef.current = false;
+
+    void deviceService
+      .sendMouseButtonUp(device.id, device.ip, 'left')
+      .then(() => {
+        lastTouchpadCommandErrorRef.current = null;
+      })
+      .catch(handleTouchpadCommandError);
+  }, [clearDragHoldTimeout, device, handleTouchpadCommandError, setupMessage, status]);
+
+  const finishTouchpadGesture = useCallback(() => {
+    clearDragHoldTimeout();
+
+    const tapCandidate = twoFingerTapCandidateRef.current;
+    twoFingerTapCandidateRef.current = null;
+
+    if (
+      tapCandidate &&
+      Date.now() - tapCandidate.startedAt <= TOUCHPAD_TAP_MAX_DURATION_MS &&
+      tapCandidate.maxDistance <= TOUCHPAD_TAP_MAX_DISTANCE
+    ) {
+      handleTwoFingerTap();
+    }
+
+    pendingScrollRef.current = 0;
+    resetTouchpadTracking();
+    flushPendingMouseMove();
+    releaseDragGesture();
+  }, [clearDragHoldTimeout, flushPendingMouseMove, handleTwoFingerTap, releaseDragGesture, resetTouchpadTracking]);
 
   const handleTouchpadGesture = useCallback((event: PanGestureHandlerGestureEvent) => {
     if (!device || status !== 'online' || setupMessage) {
       return;
     }
 
-    const { translationX, translationY } = event.nativeEvent;
+    const { numberOfPointers, translationX, translationY } = event.nativeEvent;
+
+    if (numberOfPointers === 2) {
+      clearDragHoldTimeout();
+
+      if (twoFingerTapCandidateRef.current) {
+        twoFingerTapCandidateRef.current.maxDistance = Math.max(
+          twoFingerTapCandidateRef.current.maxDistance,
+          Math.abs(translationX),
+          Math.abs(translationY)
+        );
+      }
+      return;
+    }
+
+    if (numberOfPointers !== 1) {
+      clearDragHoldTimeout();
+      return;
+    }
+
     const deltaX = translationX - lastTouchpadTranslationRef.current.x;
     const deltaY = translationY - lastTouchpadTranslationRef.current.y;
 
     lastTouchpadTranslationRef.current = { x: translationX, y: translationY };
 
+    if (
+      gestureModeRef.current === 'scroll' ||
+      Math.abs(translationX) > TOUCHPAD_TAP_MAX_DISTANCE ||
+      Math.abs(translationY) > TOUCHPAD_TAP_MAX_DISTANCE
+    ) {
+      clearDragHoldTimeout();
+    }
+
     if (Math.abs(deltaX) < TOUCHPAD_NOISE_THRESHOLD && Math.abs(deltaY) < TOUCHPAD_NOISE_THRESHOLD) {
       return;
     }
 
-    pendingMouseMoveRef.current.x += deltaX * TOUCHPAD_SENSITIVITY;
-    pendingMouseMoveRef.current.y += deltaY * TOUCHPAD_SENSITIVITY;
+    if (gestureModeRef.current === 'scroll') {
+    pendingScrollRef.current += deltaY * scrollingSpeedMultiplier;
+      flushPendingScroll();
+      return;
+    }
+
+    pendingMouseMoveRef.current.x += deltaX * TOUCHPAD_SENSITIVITY * trackingSpeedMultiplier;
+    pendingMouseMoveRef.current.y += deltaY * TOUCHPAD_SENSITIVITY * trackingSpeedMultiplier;
     flushPendingMouseMove();
-  }, [device, flushPendingMouseMove, setupMessage, status]);
+  }, [
+    clearDragHoldTimeout,
+    device,
+    flushPendingMouseMove,
+    flushPendingScroll,
+    scrollingSpeedMultiplier,
+    setupMessage,
+    status,
+    trackingSpeedMultiplier,
+  ]);
 
   const handleTouchpadStateChange = useCallback((event: PanGestureHandlerStateChangeEvent) => {
-    if (event.nativeEvent.state === State.BEGAN) {
+    const { numberOfPointers, state, y } = event.nativeEvent;
+
+    if (state === State.BEGAN) {
       resetTouchpadTracking();
+      pendingScrollRef.current = 0;
+      clearDragHoldTimeout();
+      gestureModeRef.current = determineTouchpadMode(y);
+      twoFingerTapCandidateRef.current = numberOfPointers === 2
+        ? { startedAt: Date.now(), maxDistance: 0 }
+        : null;
+
+      if (numberOfPointers === 1 && gestureModeRef.current === 'pointer') {
+        dragHoldTimeoutRef.current = setTimeout(() => {
+          dragHoldTimeoutRef.current = null;
+          beginDragGesture();
+        }, TOUCHPAD_DRAG_HOLD_MS);
+      }
+
       return;
     }
 
-    if (event.nativeEvent.oldState !== State.ACTIVE) {
+    if (state === State.END || state === State.CANCELLED || state === State.FAILED) {
+      finishTouchpadGesture();
       return;
     }
 
-    resetTouchpadTracking();
-    flushPendingMouseMove();
-  }, [flushPendingMouseMove, resetTouchpadTracking]);
+    if (event.nativeEvent.oldState === State.ACTIVE) {
+      finishTouchpadGesture();
+    }
+  }, [
+    beginDragGesture,
+    clearDragHoldTimeout,
+    determineTouchpadMode,
+    finishTouchpadGesture,
+    resetTouchpadTracking,
+  ]);
+
+  const refocusKeyboardInput = useCallback((delay = 80) => {
+    setTimeout(() => keyboardInputRef.current?.focus(), delay);
+  }, []);
 
   const handleTabChange = useCallback((tab: ControlTab) => {
-    setActiveTab(tab);
     setIsDevicePickerOpen(false);
     triggerHaptic('selection');
 
-    if (tab === 'keyboard') {
-      setTimeout(() => keyboardInputRef.current?.focus(), 100);
+    if (tab === activeTab && tab !== 'keys') {
+      setKeyboardAccessoryMode(null);
+      setActiveTab('mouse');
+      Keyboard.dismiss();
       return;
     }
 
+    if (tab === 'keyboard') {
+      setKeyboardAccessoryMode(null);
+      setActiveTab('keyboard');
+      refocusKeyboardInput(100);
+      return;
+    }
+
+    if (tab === 'keys' && activeTab === 'keyboard') {
+      setKeyboardAccessoryMode((current) => (current ? null : 'modifiers'));
+      refocusKeyboardInput(60);
+      return;
+    }
+
+    setKeyboardAccessoryMode(null);
+    setActiveTab(tab);
     Keyboard.dismiss();
-  }, [triggerHaptic]);
+  }, [activeTab, refocusKeyboardInput, triggerHaptic]);
 
   const handleDevicePickerToggle = useCallback(() => {
     if (savedDevices.length < 2) {
@@ -410,6 +850,22 @@ export default function DeviceControlScreen() {
     });
   }, [device, runCommand, status]);
 
+  const handleScrollRailGrant = useCallback((locationY: number) => {
+    lastScrollRailLocationYRef.current = locationY;
+    triggerHaptic('selection');
+  }, [triggerHaptic]);
+
+  const handleScrollRailMove = useCallback((locationY: number) => {
+    const previousLocationY = lastScrollRailLocationYRef.current;
+    lastScrollRailLocationYRef.current = locationY;
+
+    if (previousLocationY === null) {
+      return;
+    }
+
+    handleScrollRailDelta(locationY - previousLocationY);
+  }, [handleScrollRailDelta]);
+
   const handleSpecialKey = useCallback((keyValue: string, label: string) => {
     if (!device || status !== 'online') {
       return;
@@ -433,7 +889,7 @@ export default function DeviceControlScreen() {
       triggerHaptic('success');
       showFeedback('Text sent', 'success');
       setKeyboardText('');
-      keyboardInputRef.current?.focus();
+      refocusKeyboardInput(40);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Something went wrong';
       triggerHaptic('error');
@@ -442,7 +898,27 @@ export default function DeviceControlScreen() {
     } finally {
       setIsSendingKeyboard(false);
     }
-  }, [device, isSendingKeyboard, keyboardText, showFeedback, status, triggerHaptic]);
+  }, [device, isSendingKeyboard, keyboardText, refocusKeyboardInput, showFeedback, status, triggerHaptic]);
+
+  const handleKeyboardQuickKey = useCallback((keyValue: string, label: string) => {
+    handleSpecialKey(keyValue, label);
+    refocusKeyboardInput(40);
+  }, [handleSpecialKey, refocusKeyboardInput]);
+
+  const devicePlatform = normalizeDevicePlatform(
+    inferDevicePlatformFromMetadata(
+      {
+        platform: device?.platform,
+        name: device?.name,
+      },
+      device?.name
+    )
+  );
+  const primaryShortcutModifier = getPrimaryShortcutModifier(devicePlatform);
+  const modifierKeys = getModifierKeys(devicePlatform);
+  const productivityShortcuts = getProductivityShortcuts(devicePlatform);
+  const keyboardAccessoryTitle =
+    keyboardAccessoryMode === 'functions' ? 'Fn Keys' : `${primaryShortcutModifier.label} Keys`;
 
   const handleMediaCommand = useCallback((
     command: 'play_pause' | 'next' | 'previous' | 'volume_up' | 'volume_down' | 'mute'
@@ -482,6 +958,104 @@ export default function DeviceControlScreen() {
       successHaptic: 'light',
     });
   }, [device, isPlaying, runCommand, status]);
+
+  const handleHardwareVolumeRemoteStep = useCallback((direction: 'up' | 'down') => {
+    if (!device || status !== 'online' || setupMessage) {
+      return;
+    }
+
+    const action = direction === 'up'
+      ? deviceService.sendVolumeUp(device.id, device.ip)
+      : deviceService.sendVolumeDown(device.id, device.ip);
+
+    void action.catch((error) => {
+      const message = error instanceof Error ? error.message : 'Hardware volume remote failed';
+      showFeedback(message, 'warning');
+    });
+  }, [device, setupMessage, showFeedback, status]);
+
+  const handleHardwareVolumeChange = useCallback((nextVolume: number) => {
+    if (isResettingVolumeRef.current) {
+      isResettingVolumeRef.current = false;
+      lastVolumeRef.current = baselineVolumeRef.current;
+      return;
+    }
+
+    const volumeDelta = nextVolume - lastVolumeRef.current;
+    lastVolumeRef.current = nextVolume;
+
+    if (Math.abs(volumeDelta) < 0.01) {
+      return;
+    }
+
+    handleHardwareVolumeRemoteStep(volumeDelta > 0 ? 'up' : 'down');
+    isResettingVolumeRef.current = true;
+
+    void VolumeManager.setVolume(baselineVolumeRef.current, {
+      playSound: false,
+      showUI: false,
+    })
+      .then(() => {
+        lastVolumeRef.current = baselineVolumeRef.current;
+      })
+      .catch((error) => {
+        isResettingVolumeRef.current = false;
+        console.warn('Failed to restore hardware volume baseline:', error);
+      });
+  }, [handleHardwareVolumeRemoteStep]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const teardownVolumeListener = () => {
+      volumeListenerRef.current?.remove();
+      volumeListenerRef.current = null;
+      isResettingVolumeRef.current = false;
+    };
+
+    if (!controlSettings.useVolumeButtons) {
+      teardownVolumeListener();
+      void VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+      return;
+    }
+
+    const enableHardwareVolumeRemote = async () => {
+      try {
+        teardownVolumeListener();
+        await VolumeManager.showNativeVolumeUI({ enabled: false });
+
+        const { volume } = await VolumeManager.getVolume();
+        if (isCancelled) {
+          return;
+        }
+
+        baselineVolumeRef.current = volume;
+        lastVolumeRef.current = volume;
+        volumeListenerRef.current = VolumeManager.addVolumeListener(({ volume: changedVolume }) => {
+          handleHardwareVolumeChange(changedVolume);
+        });
+      } catch (error) {
+        teardownVolumeListener();
+
+        if (!isCancelled) {
+          console.warn('Failed to enable hardware volume remote:', error);
+          Alert.alert(
+            'Volume button remote unavailable',
+            'This option needs a development build on a physical device so WakeMate can listen for hardware volume presses.'
+          );
+          setControlSettings((current) => ({ ...current, useVolumeButtons: false }));
+        }
+      }
+    };
+
+    void enableHardwareVolumeRemote();
+
+    return () => {
+      isCancelled = true;
+      teardownVolumeListener();
+      void VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+    };
+  }, [controlSettings.useVolumeButtons, handleHardwareVolumeChange]);
 
   const confirmPowerCommand = useCallback((
     title: string,
@@ -587,12 +1161,137 @@ export default function DeviceControlScreen() {
           <TouchableOpacity
             key={item.label}
             style={[styles.keyboardMiniQuickKey, item.wide && styles.keyboardMiniQuickKeyWide]}
-            onPress={() => handleSpecialKey(item.keyValue, item.label)}
+            onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
           >
             <Text style={styles.keyboardMiniQuickKeyText}>{item.label}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
+    </View>
+  );
+
+  const renderKeyboardQuickKeysOverlay = () => (
+    <View style={styles.keyboardAccessoryCard}>
+      <View style={styles.keyboardAccessoryHeader}>
+        <Text style={styles.keyboardAccessoryTitle}>{keyboardAccessoryTitle}</Text>
+        <Text style={styles.keyboardAccessoryHint}>Keyboard stays open</Text>
+      </View>
+
+      <View style={styles.keyboardAccessoryToggleRow}>
+        <TouchableOpacity
+          style={[
+            styles.keyboardAccessoryToggle,
+            keyboardAccessoryMode === 'modifiers' && styles.keyboardAccessoryToggleActive,
+          ]}
+          onPress={() => {
+            setKeyboardAccessoryMode('modifiers');
+            refocusKeyboardInput(40);
+          }}
+        >
+          <Text
+            style={[
+              styles.keyboardAccessoryToggleText,
+              keyboardAccessoryMode === 'modifiers' && styles.keyboardAccessoryToggleTextActive,
+            ]}
+          >
+            {primaryShortcutModifier.label}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.keyboardAccessoryToggle,
+            keyboardAccessoryMode === 'functions' && styles.keyboardAccessoryToggleActive,
+          ]}
+          onPress={() => {
+            setKeyboardAccessoryMode('functions');
+            refocusKeyboardInput(40);
+          }}
+        >
+          <Text
+            style={[
+              styles.keyboardAccessoryToggleText,
+              keyboardAccessoryMode === 'functions' && styles.keyboardAccessoryToggleTextActive,
+            ]}
+          >
+            Fn
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {keyboardAccessoryMode === 'functions' ? (
+        <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.keyboardAccessoryRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {FUNCTION_KEYS.map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.keyboardAccessoryKey}
+                onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
+              >
+                <Text style={styles.keyboardAccessoryKeyText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.keyboardAccessoryRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {[...KEYBOARD_QUICK_KEYS, { label: 'Delete', keyValue: 'delete' }].map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={[styles.keyboardAccessoryKey, item.wide && styles.keyboardAccessoryKeyWide]}
+                onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
+              >
+                <Text style={styles.keyboardAccessoryKeyText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </>
+      ) : (
+        <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.keyboardAccessoryRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {modifierKeys.map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={styles.keyboardAccessoryKey}
+                onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
+              >
+                <Text style={styles.keyboardAccessoryKeyText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.keyboardAccessoryRow}
+            keyboardShouldPersistTaps="handled"
+          >
+            {productivityShortcuts.map((item) => (
+              <TouchableOpacity
+                key={item.label}
+                style={[styles.keyboardAccessoryKey, item.wide && styles.keyboardAccessoryKeyWide]}
+                onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
+              >
+                <Text style={styles.keyboardAccessoryKeyText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </>
+      )}
     </View>
   );
 
@@ -626,7 +1325,7 @@ export default function DeviceControlScreen() {
                 <Text style={styles.keySectionMeta}>System</Text>
               </View>
               <View style={styles.modifierRow}>
-                {MODIFIER_KEYS.map((item) => (
+                {modifierKeys.map((item) => (
                   <TouchableOpacity
                     key={item.label}
                     style={styles.modifierKey}
@@ -703,7 +1402,7 @@ export default function DeviceControlScreen() {
                 <Text style={styles.keySectionMeta}>Workflow</Text>
               </View>
               <View style={styles.comboWrap}>
-                {PRODUCTIVITY_SHORTCUTS.map((item) => (
+                {productivityShortcuts.map((item) => (
                   <TouchableOpacity
                     key={item.label}
                     style={[styles.comboKey, item.wide && styles.comboKeyWide]}
@@ -828,6 +1527,7 @@ export default function DeviceControlScreen() {
   }
 
   const deviceIsOnline = status === 'online';
+  const isKeyboardQuickKeysVisible = activeTab === 'keyboard' && keyboardAccessoryMode !== null;
   const isKeyboardDockActive = isKeyboardVisible && activeTab === 'keyboard';
   const showInteractiveConsole = deviceIsOnline && !setupMessage;
   const hasMultipleDevices = savedDevices.length > 1;
@@ -941,85 +1641,131 @@ export default function DeviceControlScreen() {
                   </TouchableOpacity>
                 </View>
 
-                <GestureHandlerRootView style={styles.touchpadGestureRoot}>
-                  <PanGestureHandler
-                    onGestureEvent={handleTouchpadGesture}
-                    onHandlerStateChange={handleTouchpadStateChange}
-                  >
-                    <View style={styles.touchpadSurface}>
-                      <View style={styles.touchpadHalo} />
-                      <View style={styles.touchpadCenter}>
-                        <MousePointer size={30} color="#d8fbff" />
-                        <Text style={styles.touchpadHint}>Trackpad</Text>
+                <View style={styles.touchpadShell}>
+                  <GestureHandlerRootView style={styles.touchpadGestureRoot}>
+                    <PanGestureHandler
+                      onGestureEvent={handleTouchpadGesture}
+                      onHandlerStateChange={handleTouchpadStateChange}
+                    >
+                      <View
+                        style={styles.touchpadSurface}
+                        onLayout={(event) => {
+                          touchpadHeightRef.current = event.nativeEvent.layout.height;
+                        }}
+                      >
+                        <View style={styles.touchpadHalo} />
+                        <View style={styles.touchpadCenter}>
+                          <MousePointer size={30} color="#d8fbff" />
+                          <Text style={styles.touchpadHint}>Touchpad</Text>
+                        </View>
                       </View>
+                    </PanGestureHandler>
+                  </GestureHandlerRootView>
+
+                  <View
+                    pointerEvents="box-none"
+                    style={[styles.scrollRailOverlay, isKeyboardDockActive && styles.scrollRailOverlayKeyboard]}
+                  >
+                    <TouchableOpacity style={styles.scrollButtonCompact} onPress={() => handleScroll(4)}>
+                      <ChevronUp size={16} color="#f5f6fb" />
+                    </TouchableOpacity>
+
+                    <View
+                      style={styles.scrollTrack}
+                      onLayout={(event) => {
+                        scrollTrackHeightRef.current = event.nativeEvent.layout.height;
+                      }}
+                      onStartShouldSetResponder={() => true}
+                      onMoveShouldSetResponder={() => true}
+                      onResponderGrant={(event) => {
+                        handleScrollRailGrant(event.nativeEvent.locationY);
+                      }}
+                      onResponderMove={(event) => {
+                        handleScrollRailMove(event.nativeEvent.locationY);
+                      }}
+                      onResponderRelease={resetScrollRailDrag}
+                      onResponderTerminate={resetScrollRailDrag}
+                    >
+                      <View
+                        style={[
+                          styles.scrollThumb,
+                          {
+                            transform: [{ translateY: scrollThumbOffset }],
+                          },
+                        ]}
+                      />
                     </View>
-                  </PanGestureHandler>
-                </GestureHandlerRootView>
 
-                <View style={[styles.scrollRailOverlay, isKeyboardDockActive && styles.scrollRailOverlayKeyboard]}>
-                  <TouchableOpacity style={styles.scrollButtonCompact} onPress={() => handleScroll(4)}>
-                    <ChevronUp size={16} color="#f5f6fb" />
-                  </TouchableOpacity>
-
-                  <View style={styles.scrollTrack}>
-                    <View style={styles.scrollThumb} />
+                    <TouchableOpacity style={styles.scrollButtonCompact} onPress={() => handleScroll(-4)}>
+                      <ChevronDown size={16} color="#f5f6fb" />
+                    </TouchableOpacity>
                   </View>
 
-                  <TouchableOpacity style={styles.scrollButtonCompact} onPress={() => handleScroll(-4)}>
-                    <ChevronDown size={16} color="#f5f6fb" />
-                  </TouchableOpacity>
-                </View>
+                  <View style={[styles.clickRailOverlay, isKeyboardDockActive && styles.clickRailOverlayKeyboard]}>
+                    <TouchableOpacity
+                      style={[styles.clickKey, styles.clickKeyWide]}
+                      onPress={() => handleMouseClick('left')}
+                      accessibilityLabel="Left click"
+                    >
+                      <Text style={styles.clickKeyText}>L</Text>
+                    </TouchableOpacity>
 
-                <View style={[styles.clickRailOverlay, isKeyboardDockActive && styles.clickRailOverlayKeyboard]}>
-                  <TouchableOpacity
-                    style={[styles.clickKey, styles.clickKeyWide]}
-                    onPress={() => handleMouseClick('left')}
-                    accessibilityLabel="Left click"
-                  >
-                    <Text style={styles.clickKeyText}>L</Text>
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.clickKey}
+                      onPress={() => handleMouseClick('middle')}
+                      accessibilityLabel="Middle click"
+                    >
+                      <Text style={styles.clickKeyText}>M</Text>
+                    </TouchableOpacity>
 
-                  <TouchableOpacity
-                    style={styles.clickKey}
-                    onPress={() => handleMouseClick('middle')}
-                    accessibilityLabel="Middle click"
-                  >
-                    <Text style={styles.clickKeyText}>M</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.clickKey, styles.clickKeyWide]}
-                    onPress={() => handleMouseClick('right')}
-                    accessibilityLabel="Right click"
-                  >
-                    <Text style={styles.clickKeyText}>R</Text>
-                  </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.clickKey, styles.clickKeyWide]}
+                      onPress={() => handleMouseClick('right')}
+                      accessibilityLabel="Right click"
+                    >
+                      <Text style={styles.clickKeyText}>R</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               </View>
 
               <View style={[styles.bottomDock, isKeyboardDockActive && styles.bottomDockKeyboardVisible]}>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.tabRailContent}
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {TAB_ITEMS.map(({ key, label, icon: Icon }) => {
-                    const active = activeTab === key;
+                <View style={styles.dockControlsRow}>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.tabRailContent}
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.tabRail}
+                  >
+                    {TAB_ITEMS.map(({ key, label, icon: Icon }) => {
+                      const active =
+                        activeTab === key ||
+                        (key === 'keys' && isKeyboardQuickKeysVisible);
 
-                    return (
-                      <TouchableOpacity
-                        key={key}
-                        style={[styles.tabButton, active && styles.activeTabButton]}
-                        onPress={() => handleTabChange(key)}
-                        accessibilityLabel={`Open ${label} panel`}
-                      >
-                        <Icon size={17} color={active ? '#ecfeff' : '#a8a8ba'} />
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
+                      return (
+                        <TouchableOpacity
+                          key={key}
+                          style={[styles.tabButton, active && styles.activeTabButton]}
+                          onPress={() => handleTabChange(key)}
+                          accessibilityLabel={`Open ${label} panel`}
+                        >
+                          <Icon size={17} color={active ? '#ecfeff' : '#a8a8ba'} />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
 
+                  <TouchableOpacity
+                    style={[styles.tabButton, styles.settingsDockButton, isSettingsVisible && styles.activeTabButton]}
+                    onPress={() => setIsSettingsVisible(true)}
+                    accessibilityLabel="Open control settings"
+                  >
+                    <Settings size={17} color={isSettingsVisible ? '#ecfeff' : '#a8a8ba'} />
+                  </TouchableOpacity>
+                </View>
+
+                {isKeyboardQuickKeysVisible ? renderKeyboardQuickKeysOverlay() : null}
                 {renderDockPanel()}
               </View>
             </View>
@@ -1053,6 +1799,77 @@ export default function DeviceControlScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
+
+      <Modal visible={isSettingsVisible} transparent animationType="slide" onRequestClose={() => setIsSettingsVisible(false)}>
+        <View style={styles.settingsModalOverlay}>
+          <View style={[styles.settingsModalSheet, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
+            <View style={styles.settingsModalHeader}>
+              <View>
+                <Text style={styles.settingsModalTitle}>Control Settings</Text>
+                <Text style={styles.settingsModalSubtitle}>Tune touchpad feel and remote behavior.</Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.settingsModalCloseButton}
+                onPress={() => setIsSettingsVisible(false)}
+                accessibilityLabel="Close control settings"
+              >
+                <X size={18} color="#d7eef7" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.settingsModalContent} showsVerticalScrollIndicator={false}>
+              <SettingsSlider
+                label="Tracking Speed"
+                description="Lower values make short glides more precise. Higher values move the cursor farther with the same swipe."
+                value={controlSettings.trackingSpeed}
+                onChange={(value) => setControlSettings((current) => ({ ...current, trackingSpeed: value }))}
+              />
+
+              <SettingsSlider
+                label="Scrolling Speed"
+                description="Lower values keep scrolling gentle. Higher values turn the same glide into faster page movement."
+                value={controlSettings.scrollingSpeed}
+                onChange={(value) => setControlSettings((current) => ({ ...current, scrollingSpeed: value }))}
+              />
+
+              <View style={styles.settingsToggleCard}>
+                <View style={styles.settingsToggleCopy}>
+                  <Text style={styles.settingsToggleTitle}>Disable Sleep</Text>
+                  <Text style={styles.settingsToggleDescription}>
+                    Keeps your phone awake while you are using the remote so the controls stay ready.
+                  </Text>
+                </View>
+                <Switch
+                  value={controlSettings.disableSleep}
+                  onValueChange={(value) => setControlSettings((current) => ({ ...current, disableSleep: value }))}
+                  trackColor={{ false: '#203640', true: '#0ea5c7' }}
+                  thumbColor={controlSettings.disableSleep ? '#f8fdff' : '#c0d5dd'}
+                />
+              </View>
+
+              <View style={styles.settingsToggleCard}>
+                <View style={styles.settingsToggleCopy}>
+                  <Text style={styles.settingsToggleTitle}>Volume Button Remote</Text>
+                  <Text style={styles.settingsToggleDescription}>
+                    Uses your phone&apos;s physical volume buttons for PC volume up and down while this screen is open.
+                  </Text>
+                </View>
+                <Switch
+                  value={controlSettings.useVolumeButtons}
+                  onValueChange={(value) => setControlSettings((current) => ({ ...current, useVolumeButtons: value }))}
+                  trackColor={{ false: '#203640', true: '#0ea5c7' }}
+                  thumbColor={controlSettings.useVolumeButtons ? '#f8fdff' : '#c0d5dd'}
+                />
+              </View>
+
+              <Text style={styles.settingsFootnote}>
+                Hardware volume capture works best in a development build on a real device.
+              </Text>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1220,11 +2037,11 @@ const styles = StyleSheet.create({
   },
   remoteStage: {
     flex: 1,
-    minHeight: 340,
+    minHeight: 360,
     borderRadius: 34,
     overflow: 'hidden',
-    paddingHorizontal: 12,
-    paddingTop: 12,
+    paddingHorizontal: 14,
+    paddingTop: 16,
     paddingBottom: 12,
     borderWidth: 1,
     borderColor: 'rgba(103, 232, 249, 0.14)',
@@ -1252,9 +2069,9 @@ const styles = StyleSheet.create({
   },
   stageTopOverlay: {
     position: 'absolute',
-    top: 12,
-    left: 12,
-    right: 12,
+    top: 16,
+    left: 16,
+    right: 16,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -1263,7 +2080,7 @@ const styles = StyleSheet.create({
   },
   devicePickerWrap: {
     flex: 1,
-    maxWidth: '82%',
+    maxWidth: '76%',
   },
   deviceSwitcher: {
     flexDirection: 'row',
@@ -1352,6 +2169,12 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 8,
+  },
+  touchpadShell: {
+    flex: 1,
+    borderRadius: 28,
+    overflow: 'hidden',
   },
   touchpadGestureRoot: {
     flex: 1,
@@ -1362,11 +2185,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 16, 25, 0.16)',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
-    paddingHorizontal: 26,
-    paddingVertical: 24,
+    paddingLeft: 26,
+    paddingRight: 50,
+    paddingTop: 24,
+    paddingBottom: 58,
     justifyContent: 'center',
     alignItems: 'center',
-    minHeight: 240,
+    minHeight: 256,
   },
   touchpadHalo: {
     position: 'absolute',
@@ -1378,7 +2203,7 @@ const styles = StyleSheet.create({
   touchpadCenter: {
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: 8,
   },
   touchpadHint: {
     color: '#d8fbff',
@@ -1389,7 +2214,7 @@ const styles = StyleSheet.create({
   scrollRailOverlay: {
     position: 'absolute',
     top: 76,
-    right: 12,
+    right: 16,
     bottom: 78,
     width: 38,
     alignItems: 'center',
@@ -1426,14 +2251,14 @@ const styles = StyleSheet.create({
   },
   clickRailOverlay: {
     position: 'absolute',
-    left: 12,
-    right: 58,
-    bottom: 12,
+    left: 16,
+    right: 16,
+    bottom: 16,
     flexDirection: 'row',
-    gap: 4,
+    gap: 6,
   },
   clickRailOverlayKeyboard: {
-    bottom: 8,
+    bottom: 12,
   },
   bottomDock: {
     borderRadius: 24,
@@ -1444,8 +2269,17 @@ const styles = StyleSheet.create({
   bottomDockKeyboardVisible: {
     paddingBottom: 4,
   },
+  dockControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  tabRail: {
+    flex: 1,
+  },
   clickKey: {
     minHeight: 38,
+    minWidth: 52,
     borderRadius: 10,
     backgroundColor: '#2b2e36',
     borderWidth: 1,
@@ -1453,6 +2287,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
+    flexShrink: 0,
   },
   clickKeyWide: {
     flex: 1,
@@ -1475,6 +2310,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  settingsDockButton: {
+    flexShrink: 0,
+  },
   activeTabButton: {
     backgroundColor: '#0891b2',
   },
@@ -1485,6 +2323,144 @@ const styles = StyleSheet.create({
   },
   activeTabLabel: {
     color: '#ffffff',
+  },
+  settingsModalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(2, 6, 10, 0.74)',
+  },
+  settingsModalSheet: {
+    maxHeight: '82%',
+    backgroundColor: '#0b1017',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.14)',
+    paddingHorizontal: 18,
+    paddingTop: 16,
+  },
+  settingsModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 14,
+  },
+  settingsModalTitle: {
+    color: '#f5fbff',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  settingsModalSubtitle: {
+    color: '#8da8b2',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  settingsModalCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#15212b',
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsModalContent: {
+    paddingBottom: 6,
+  },
+  settingBlock: {
+    marginBottom: 20,
+  },
+  settingBlockHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  settingLabel: {
+    color: '#f5fbff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  settingValue: {
+    color: '#67e8f9',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  settingDescription: {
+    color: '#90a8b3',
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  sliderTrack: {
+    height: 12,
+    borderRadius: 999,
+    backgroundColor: '#16232b',
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.12)',
+    justifyContent: 'center',
+  },
+  sliderFill: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 999,
+    backgroundColor: '#0891b2',
+  },
+  sliderThumb: {
+    position: 'absolute',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#f8fdff',
+    borderWidth: 3,
+    borderColor: '#0891b2',
+  },
+  sliderLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  sliderLabelText: {
+    color: '#6f8a96',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  settingsToggleCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: '#141b23',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.1)',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    marginBottom: 12,
+  },
+  settingsToggleCopy: {
+    flex: 1,
+  },
+  settingsToggleTitle: {
+    color: '#f5fbff',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  settingsToggleDescription: {
+    color: '#8da6b0',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  settingsFootnote: {
+    color: '#6f8a96',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 2,
   },
   panelCard: {
     borderRadius: 24,
@@ -1580,6 +2556,80 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
   },
   keyboardMiniQuickKeyText: {
+    color: '#f5f6fb',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  keyboardAccessoryCard: {
+    borderRadius: 20,
+    backgroundColor: '#151922',
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.12)',
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 8,
+    gap: 8,
+    marginBottom: 8,
+  },
+  keyboardAccessoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 2,
+  },
+  keyboardAccessoryTitle: {
+    color: '#f5f6fb',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  keyboardAccessoryHint: {
+    color: '#7dd3fc',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  keyboardAccessoryToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  keyboardAccessoryToggle: {
+    minHeight: 32,
+    borderRadius: 12,
+    backgroundColor: '#202530',
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyboardAccessoryToggleActive: {
+    backgroundColor: '#8ac926',
+  },
+  keyboardAccessoryToggleText: {
+    color: '#d4d7e3',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  keyboardAccessoryToggleTextActive: {
+    color: '#11151c',
+  },
+  keyboardAccessoryRow: {
+    gap: 8,
+    paddingRight: 2,
+  },
+  keyboardAccessoryKey: {
+    minHeight: 34,
+    borderRadius: 12,
+    backgroundColor: '#272b35',
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  keyboardAccessoryKeyWide: {
+    paddingHorizontal: 15,
+  },
+  keyboardAccessoryKeyText: {
     color: '#f5f6fb',
     fontSize: 11,
     fontWeight: '700',

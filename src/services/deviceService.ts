@@ -3,6 +3,7 @@ import axios, { isAxiosError } from 'axios';
 import dgram from 'react-native-udp';
 import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
+import { inferDevicePlatformFromMetadata } from '../utils/devicePlatform';
 import {
   getSuggestedWakeAddress,
   isValidIpAddress,
@@ -14,16 +15,70 @@ import {
 import { syncDevicesToWidgetStorage } from '../widget/widgetSharedStorage';
 
 const SERVER_IP_KEY = 'serverIp';
+const SERVER_PORT_KEY = 'serverPort';
 const SERVER_TOKEN_KEY = 'serverToken';
-const API_PORT = 7777;
+const DEFAULT_API_PORT = 7777;
 const AUTH_HEADER = 'x-wakemate-token';
 const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
 const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Add it in Settings before using remote controls.';
 const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Add the api_token from wakemate.config.json in Settings.';
 const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Update the api_token in Settings before using remote controls.';
+const DISCOVERY_NAME_KEYS = [
+  'name',
+  'hostname',
+  'host',
+  'devicename',
+  'device_name',
+  'computername',
+  'machinename',
+  'friendlyname',
+  'systemname',
+];
+const DISCOVERY_IP_KEYS = [
+  'ip',
+  'serverip',
+  'server_ip',
+  'localip',
+  'local_ip',
+  'ipaddress',
+  'address',
+  'hostip',
+  'ipv4',
+  'localaddress',
+];
+const DISCOVERY_MAC_KEYS = [
+  'mac',
+  'macaddress',
+  'mac_address',
+  'hwaddress',
+  'physicaladdress',
+  'physical_address',
+  'ethernetmac',
+  'wifimac',
+  'primarymac',
+  'primary_mac',
+  'primarymacaddress',
+  'adaptermac',
+  'networkadaptermac',
+  'lanmac',
+];
+const DISCOVERY_WAKE_ADDRESS_KEYS = [
+  'wakeaddress',
+  'wake_address',
+  'broadcast',
+  'broadcastaddress',
+  'broadcast_address',
+  'wakebroadcast',
+  'wolbroadcast',
+  'wolbroadcastaddress',
+];
+const DISCOVERY_WAKE_PORT_KEYS = ['wakeport', 'wake_port', 'wakeonlanport', 'wolport', 'wol_port', 'wakeudpport', 'woludpport'];
+const DISCOVERY_API_PORT_KEYS = ['apiport', 'api_port'];
+const DISCOVERY_VERSION_KEYS = ['version', 'appversion', 'serverversion'];
 
 type CommandParams = Record<string, any>;
 type MouseButton = 'left' | 'right' | 'middle';
+type MouseButtonAction = 'down' | 'up';
 type ScrollDirection = 'up' | 'down';
 type WakeRequestOptions = {
   wakeAddress?: string;
@@ -37,6 +92,7 @@ export type CompanionDiscoveryInfo = {
   wakePort: number | null;
   apiPort: number;
   version: string | null;
+  platform: Device['platform'];
 };
 type UnknownRecord = Record<string, unknown>;
 
@@ -51,13 +107,19 @@ const DISCOVERY_SUBNETS = [
   '192.168.5.',
 ];
 const PRIORITY_HOSTS = [1, 10, 50, 100, 101, 102, 103, 104, 105, 150, 200, 254];
-const DISCOVERY_TIMEOUT_MS = 1000;
-const DISCOVERY_BATCH_SIZE = 20;
+const DISCOVERY_TIMEOUT_MS = 700;
+const DISCOVERY_BATCH_SIZE = 32;
 const UDP_DISCOVERY_PORT = 41234;
 const UDP_DISCOVERY_MESSAGE = 'wakemate:discover';
-const UDP_DISCOVERY_TIMEOUT_MS = 1500;
+const UDP_DISCOVERY_TIMEOUT_MS = 900;
+const DISCOVERY_RETRY_DELAY_MS = 250;
+const COMPANION_HEALTH_TIMEOUT_MS = 1200;
+const COMPANION_PAIRING_TIMEOUT_MS = 1200;
+const DEVICE_STATUS_TIMEOUT_MS = 1200;
+const PAIRING_CACHE_TTL_MS = 15000;
 
-const buildBaseUrl = (ip: string) => `http://${ip}:${API_PORT}`;
+const buildBaseUrl = (ip: string, port: number = DEFAULT_API_PORT) => `http://${ip}:${port}`;
+const pairingValidationCache = new Map<string, { expiresAt: number; data: any }>();
 
 const buildWakeAddresses = (device: Pick<Device, 'ip' | 'wakeAddress'>): string[] => {
   const configuredWakeAddress = device.wakeAddress?.trim() || '';
@@ -80,6 +142,8 @@ const normalizeStoredValue = (value: string | null | undefined): string | null =
 const isRecord = (value: unknown): value is UnknownRecord =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const normalizeKey = (value: string): string => value.replace(/[^a-z0-9]/gi, '').toLowerCase();
+
 const toCandidateString = (value: unknown): string | null => {
   if (typeof value === 'string') {
     const trimmedValue = value.trim();
@@ -93,56 +157,284 @@ const toCandidateString = (value: unknown): string | null => {
   return null;
 };
 
-const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null => {
+const toCandidatePort = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65535) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsedValue = Number.parseInt(value.trim(), 10);
+    if (Number.isInteger(parsedValue) && parsedValue >= 0 && parsedValue <= 65535) {
+      return parsedValue;
+    }
+  }
+
+  return null;
+};
+
+const findValueByKeys = (
+  input: unknown,
+  keys: string[],
+  validator?: (value: string) => boolean
+): string | null => {
+  const normalizedKeys = new Set(keys.map(normalizeKey));
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current) || visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+
+    for (const [key, value] of Object.entries(current)) {
+      const candidate = toCandidateString(value);
+
+      if (normalizedKeys.has(normalizeKey(key)) && candidate && (!validator || validator(candidate))) {
+        return candidate;
+      }
+
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
+const findNumberByKeys = (input: unknown, keys: string[]): number | null => {
+  const normalizedKeys = new Set(keys.map(normalizeKey));
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current) || visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+
+    for (const [key, value] of Object.entries(current)) {
+      const candidate = toCandidatePort(value);
+
+      if (normalizedKeys.has(normalizeKey(key)) && candidate !== null) {
+        return candidate;
+      }
+
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
+const findMatchingValue = (input: unknown, validator: (value: string) => boolean): string | null => {
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current)) {
+      const candidate = toCandidateString(current);
+      if (candidate && validator(candidate)) {
+        return candidate;
+      }
+      continue;
+    }
+
+    if (visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+
+    for (const value of Object.values(current)) {
+      const candidate = toCandidateString(value);
+      if (candidate && validator(candidate)) {
+        return candidate;
+      }
+
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return null;
+};
+
+const collectRecords = (input: unknown): UnknownRecord[] => {
+  const queue: unknown[] = [input];
+  const visited = new Set<object>();
+  const records: UnknownRecord[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+
+    if (!isRecord(current) || visited.has(current)) {
+      continue;
+    }
+
+    visited.add(current);
+    records.push(current);
+
+    for (const value of Object.values(current)) {
+      if (Array.isArray(value) || isRecord(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  return records;
+};
+
+const scoreDiscoveryRecord = (record: UnknownRecord, fallbackIp?: string | null): number => {
+  const ip = findValueByKeys(record, DISCOVERY_IP_KEYS, isValidIpAddress);
+  const mac = findValueByKeys(record, DISCOVERY_MAC_KEYS, isValidMacAddress);
+  const wakeAddress = findValueByKeys(record, DISCOVERY_WAKE_ADDRESS_KEYS, isValidIpAddress);
+  const wakePort = findNumberByKeys(record, DISCOVERY_WAKE_PORT_KEYS);
+  const name = findValueByKeys(record, DISCOVERY_NAME_KEYS);
+
+  let score = 0;
+
+  if (fallbackIp && ip === fallbackIp) {
+    score += 100;
+  }
+  if (mac) {
+    score += 60;
+  }
+  if (ip) {
+    score += 40;
+  }
+  if (wakeAddress) {
+    score += 20;
+  }
+  if (wakePort !== null) {
+    score += 10;
+  }
+  if (name) {
+    score += 5;
+  }
+
+  return score;
+};
+
+const extractDiscoveryDetails = (
+  payload: unknown,
+  options: {
+    fallbackIp?: string;
+    fallbackName?: string;
+  } = {}
+) => {
   if (!isRecord(payload)) {
     return null;
   }
 
-  const deviceName = toCandidateString(payload.device_name) ?? toCandidateString(payload.deviceName);
-  const localIp = toCandidateString(payload.local_ip) ?? toCandidateString(payload.localIp);
+  const source = isRecord(payload.data) ? payload.data : payload;
+  const preferredSource =
+    collectRecords(source).sort(
+      (left, right) => scoreDiscoveryRecord(right, options.fallbackIp) - scoreDiscoveryRecord(left, options.fallbackIp)
+    )[0] ?? source;
+  const deviceName =
+    findValueByKeys(preferredSource, DISCOVERY_NAME_KEYS) ??
+    findValueByKeys(source, DISCOVERY_NAME_KEYS) ??
+    options.fallbackName ??
+    null;
+  const serverIp =
+    findValueByKeys(preferredSource, DISCOVERY_IP_KEYS, isValidIpAddress) ??
+    findValueByKeys(source, DISCOVERY_IP_KEYS, isValidIpAddress) ??
+    options.fallbackIp ??
+    null;
   const macAddressValue =
-    toCandidateString(payload.mac_address) ??
-    toCandidateString(payload.macAddress) ??
-    toCandidateString(payload.primary_mac) ??
-    toCandidateString(payload.primaryMac) ??
-    toCandidateString(payload.physical_address) ??
-    toCandidateString(payload.physicalAddress);
+    findValueByKeys(preferredSource, DISCOVERY_MAC_KEYS, isValidMacAddress) ??
+    findValueByKeys(source, DISCOVERY_MAC_KEYS, isValidMacAddress) ??
+    findMatchingValue(preferredSource, isValidMacAddress) ??
+    findMatchingValue(source, isValidMacAddress);
   const wakeAddress =
-    toCandidateString(payload.broadcast_address) ??
-    toCandidateString(payload.broadcastAddress) ??
-    toCandidateString(payload.wake_address) ??
-    toCandidateString(payload.wakeAddress);
-  const rawWakePort = Number(payload.wake_port ?? payload.wakePort ?? payload.wol_port ?? payload.wolPort);
-  const version = toCandidateString(payload.version);
-  const rawApiPort = Number(payload.api_port ?? payload.apiPort ?? API_PORT);
+    findValueByKeys(preferredSource, DISCOVERY_WAKE_ADDRESS_KEYS, isValidIpAddress) ??
+    findValueByKeys(source, DISCOVERY_WAKE_ADDRESS_KEYS, isValidIpAddress);
+  const wakePort =
+    findNumberByKeys(preferredSource, DISCOVERY_WAKE_PORT_KEYS) ??
+    findNumberByKeys(source, DISCOVERY_WAKE_PORT_KEYS);
+  const apiPort =
+    findNumberByKeys(preferredSource, DISCOVERY_API_PORT_KEYS) ??
+    findNumberByKeys(source, DISCOVERY_API_PORT_KEYS);
+  const version =
+    findValueByKeys(preferredSource, DISCOVERY_VERSION_KEYS) ??
+    findValueByKeys(payload, DISCOVERY_VERSION_KEYS);
+  const platform = inferDevicePlatformFromMetadata(
+    preferredSource,
+    deviceName ?? options.fallbackName ?? (serverIp ? `WakeMATE ${serverIp}` : 'WakeMATE')
+  );
 
-  if (!deviceName || !localIp || !isValidIpAddress(localIp)) {
+  return {
+    deviceName,
+    serverIp,
+    macAddress: macAddressValue ? normalizeMacAddress(macAddressValue) : null,
+    wakeAddress: wakeAddress && isValidIpAddress(wakeAddress) ? wakeAddress : null,
+    wakePort,
+    apiPort,
+    version,
+    platform,
+  };
+};
+
+const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null => {
+  const details = extractDiscoveryDetails(payload);
+  const serverIp = details?.serverIp ?? null;
+  const deviceName = details?.deviceName ?? (serverIp ? `WakeMATE ${serverIp}` : null);
+
+  if (!details || !serverIp || !isValidIpAddress(serverIp) || !deviceName) {
     return null;
   }
 
   return {
-    serverIp: localIp,
+    serverIp,
     deviceName,
-    macAddress: macAddressValue && isValidMacAddress(macAddressValue) ? normalizeMacAddress(macAddressValue) : null,
-    wakeAddress: wakeAddress && isValidIpAddress(wakeAddress) ? wakeAddress : null,
-    wakePort: Number.isInteger(rawWakePort) && rawWakePort >= 0 && rawWakePort <= 65535 ? rawWakePort : null,
-    apiPort: Number.isInteger(rawApiPort) && rawApiPort > 0 && rawApiPort <= 65535 ? rawApiPort : API_PORT,
-    version,
+    macAddress: details.macAddress,
+    wakeAddress: details.wakeAddress,
+    wakePort: details.wakePort ?? null,
+    apiPort: normalizeDiscoveredPort(details.apiPort, DEFAULT_API_PORT),
+    version: details.version,
+    platform: details.platform,
   };
 };
 
 const parseHealthDiscoveryResponse = (payload: unknown, serverIp: string): CompanionDiscoveryInfo | null => {
-  if (!isRecord(payload)) {
-    return null;
-  }
-
-  const nestedData = isRecord(payload.data) ? payload.data : null;
-  const source = nestedData ?? payload;
-  const deviceName =
-    toCandidateString(source.device_name) ??
-    toCandidateString(source.deviceName) ??
-    `WakeMATE ${serverIp}`;
-  const version = toCandidateString(source.version) ?? toCandidateString(payload.version);
+  const details = extractDiscoveryDetails(payload, {
+    fallbackIp: serverIp,
+    fallbackName: `WakeMATE ${serverIp}`,
+  });
+  const deviceName = details?.deviceName ?? `WakeMATE ${serverIp}`;
 
   if (!deviceName) {
     return null;
@@ -151,11 +443,12 @@ const parseHealthDiscoveryResponse = (payload: unknown, serverIp: string): Compa
   return {
     serverIp,
     deviceName,
-    macAddress: null,
-    wakeAddress: null,
-    wakePort: null,
-    apiPort: API_PORT,
-    version,
+    macAddress: details?.macAddress ?? null,
+    wakeAddress: details?.wakeAddress ?? null,
+    wakePort: details?.wakePort ?? null,
+    apiPort: normalizeDiscoveredPort(details?.apiPort, DEFAULT_API_PORT),
+    version: details?.version ?? null,
+    platform: details?.platform ?? inferDevicePlatformFromMetadata(payload, deviceName),
   };
 };
 
@@ -184,6 +477,7 @@ const mergeCompanionDiscoveries = (discoveries: CompanionDiscoveryInfo[]): Compa
       wakePort: existing.wakePort ?? discovery.wakePort,
       apiPort: existing.apiPort || discovery.apiPort,
       version: existing.version ?? discovery.version,
+      platform: existing.platform === 'unknown' ? discovery.platform : existing.platform,
     });
   }
 
@@ -204,11 +498,12 @@ const closeDiscoverySocket = (socket: { close: (callback?: (...args: unknown[]) 
   }
 };
 
-const discoverCompanionsViaUdp = async (): Promise<CompanionDiscoveryInfo[]> =>
+const discoverCompanionsViaUdpTargets = async (targets: string[]): Promise<CompanionDiscoveryInfo[]> =>
   new Promise((resolve) => {
     let socket: ReturnType<typeof dgram.createSocket> | null = null;
     let finished = false;
     const discoveries = new Map<string, CompanionDiscoveryInfo>();
+    const uniqueTargets = Array.from(new Set(targets.map((target) => target.trim()).filter(Boolean)));
 
     const finish = () => {
       if (finished) {
@@ -245,19 +540,38 @@ const discoverCompanionsViaUdp = async (): Promise<CompanionDiscoveryInfo[]> =>
 
     socket.once('listening', () => {
       try {
-        socket.setBroadcast(true);
-        socket.send(
-          UDP_DISCOVERY_MESSAGE,
-          undefined,
-          undefined,
-          UDP_DISCOVERY_PORT,
-          GLOBAL_BROADCAST_ADDRESS,
-          (error?: Error) => {
-            if (error) {
-              finish();
+        if (uniqueTargets.includes(GLOBAL_BROADCAST_ADDRESS)) {
+          socket.setBroadcast(true);
+        }
+
+        if (uniqueTargets.length === 0) {
+          finish();
+          return;
+        }
+
+        let remainingTargets = uniqueTargets.length;
+        let failedTargets = 0;
+
+        for (const target of uniqueTargets) {
+          socket.send(
+            UDP_DISCOVERY_MESSAGE,
+            undefined,
+            undefined,
+            UDP_DISCOVERY_PORT,
+            target,
+            (error?: Error) => {
+              remainingTargets -= 1;
+
+              if (error) {
+                failedTargets += 1;
+              }
+
+              if (remainingTargets === 0 && failedTargets === uniqueTargets.length) {
+                finish();
+              }
             }
-          }
-        );
+          );
+        }
       } catch {
         finish();
       }
@@ -270,6 +584,9 @@ const discoverCompanionsViaUdp = async (): Promise<CompanionDiscoveryInfo[]> =>
     }
   });
 
+const discoverCompanionsViaUdp = async (): Promise<CompanionDiscoveryInfo[]> =>
+  discoverCompanionsViaUdpTargets([GLOBAL_BROADCAST_ADDRESS]);
+
 const persistStringSetting = async (key: string, value: string): Promise<void> => {
   const trimmedValue = value.trim();
 
@@ -279,6 +596,15 @@ const persistStringSetting = async (key: string, value: string): Promise<void> =
   }
 
   await AsyncStorage.setItem(key, trimmedValue);
+};
+
+const persistNumberSetting = async (key: string, value: number | null | undefined): Promise<void> => {
+  if (value === null || value === undefined) {
+    await AsyncStorage.removeItem(key);
+    return;
+  }
+
+  await AsyncStorage.setItem(key, String(value));
 };
 
 const chunkArray = <T,>(items: T[], size: number): T[][] => {
@@ -291,9 +617,59 @@ const chunkArray = <T,>(items: T[], size: number): T[][] => {
   return chunks;
 };
 
-const fetchCompanionHealthDiscovery = async (ip: string): Promise<CompanionDiscoveryInfo | null> => {
+const normalizeDiscoveredPort = (value: number | null | undefined, fallback: number): number =>
+  Number.isInteger(value) && (value ?? 0) > 0 && (value ?? 0) <= 65535 ? (value as number) : fallback;
+
+const parseStoredPort = (value: string | null | undefined): number | null => {
+  const trimmedValue = value?.trim();
+  if (!trimmedValue) {
+    return null;
+  }
+
+  const parsedValue = Number.parseInt(trimmedValue, 10);
+  return Number.isInteger(parsedValue) && parsedValue > 0 && parsedValue <= 65535 ? parsedValue : null;
+};
+
+const getStoredServerPort = async (): Promise<number | null> => {
   try {
-    const response = await axios.get(`${buildBaseUrl(ip)}/v1/health`, {
+    return parseStoredPort(await AsyncStorage.getItem(SERVER_PORT_KEY));
+  } catch (error) {
+    console.error('Error getting companion port:', error);
+    return null;
+  }
+};
+
+const resolveTargetEndpoint = async (
+  explicitIp?: string | null,
+  explicitPort?: number | null
+): Promise<{ ip: string; port: number }> => {
+  const storedIp = normalizeStoredValue(await AsyncStorage.getItem(SERVER_IP_KEY));
+  const targetIp = normalizeStoredValue(explicitIp) ?? storedIp;
+
+  if (!targetIp) {
+    throw new Error(COMPANION_SERVER_IP_REQUIRED_MESSAGE);
+  }
+
+  if (explicitPort !== null && explicitPort !== undefined) {
+    return {
+      ip: targetIp,
+      port: normalizeDiscoveredPort(explicitPort, DEFAULT_API_PORT),
+    };
+  }
+
+  const storedPort = await getStoredServerPort();
+  return {
+    ip: targetIp,
+    port: normalizeDiscoveredPort(
+      storedIp && storedIp === targetIp ? storedPort : null,
+      DEFAULT_API_PORT
+    ),
+  };
+};
+
+const fetchCompanionHealthDiscovery = async (ip: string, port: number = DEFAULT_API_PORT): Promise<CompanionDiscoveryInfo | null> => {
+  try {
+    const response = await axios.get(`${buildBaseUrl(ip, port)}/v1/health`, {
       timeout: DISCOVERY_TIMEOUT_MS,
       headers: {
         'Cache-Control': 'no-cache',
@@ -304,10 +680,50 @@ const fetchCompanionHealthDiscovery = async (ip: string): Promise<CompanionDisco
       return null;
     }
 
-    return parseHealthDiscoveryResponse(response.data, ip);
+    const parsed = parseHealthDiscoveryResponse(response.data, ip);
+    return parsed ? { ...parsed, apiPort: normalizeDiscoveredPort(parsed.apiPort, port) } : null;
   } catch {
     return null;
   }
+};
+
+const wait = async (durationMs: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+
+const discoverCompanionsOnce = async (
+  storedIp: string | null,
+  storedPort: number | null
+): Promise<CompanionDiscoveryInfo[]> => {
+  const [udpDiscoveries, storedDiscovery] = await Promise.all([
+    discoverCompanionsViaUdp(),
+    storedIp ? fetchCompanionHealthDiscovery(storedIp, normalizeDiscoveredPort(storedPort, DEFAULT_API_PORT)) : Promise.resolve(null),
+  ]);
+  const directDiscoveries = mergeCompanionDiscoveries([
+    ...udpDiscoveries,
+    ...(storedDiscovery ? [storedDiscovery] : []),
+  ]);
+
+  if (directDiscoveries.length > 0) {
+    return directDiscoveries;
+  }
+
+  const subnetDiscoveries = await Promise.all(DISCOVERY_SUBNETS.map((subnet) => scanSubnetForCompanions(subnet)));
+  const subnetHealthDiscoveries = mergeCompanionDiscoveries(subnetDiscoveries.flat());
+
+  if (subnetHealthDiscoveries.length === 0) {
+    return [];
+  }
+
+  const targetedUdpDiscoveries = await discoverCompanionsViaUdpTargets(
+    subnetHealthDiscoveries.map((discovery) => discovery.serverIp)
+  );
+
+  return mergeCompanionDiscoveries([
+    ...subnetHealthDiscoveries,
+    ...targetedUdpDiscoveries,
+  ]);
 };
 
 const scanSubnetForCompanions = async (subnet: string): Promise<CompanionDiscoveryInfo[]> => {
@@ -402,6 +818,12 @@ const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
         button: (params.button ?? 'left') as MouseButton,
         double: Boolean(params.double),
       };
+    case 'mouse_button':
+      return {
+        type: 'mouse_button',
+        button: (params.button ?? 'left') as MouseButton,
+        action: (params.action ?? 'down') as MouseButtonAction,
+      };
     case 'mouse_scroll': {
       const rawAmount = normalizeNumber(params.amount, 3);
       const direction: ScrollDirection = params.direction === 'down' || rawAmount < 0 ? 'down' : 'up';
@@ -448,17 +870,6 @@ const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
     default:
       throw new Error(`Unsupported WakeMATE command: ${command}`);
   }
-};
-
-const resolveTargetIp = async (explicitIp?: string | null): Promise<string> => {
-  const storedIp = normalizeStoredValue(await deviceService.getServerAddress());
-  const candidate = normalizeStoredValue(explicitIp) ?? storedIp;
-
-  if (!candidate) {
-    throw new Error(COMPANION_SERVER_IP_REQUIRED_MESSAGE);
-  }
-
-  return candidate;
 };
 
 const requireServerToken = async (): Promise<string> => {
@@ -512,9 +923,42 @@ const deviceService = {
 
   async setServerAddress(ip: string): Promise<void> {
     try {
-      await persistStringSetting(SERVER_IP_KEY, ip);
+      await this.setServerConnection(ip);
     } catch (error) {
       console.error('Error setting server address:', error);
+      throw error;
+    }
+  },
+
+  async getServerPort(): Promise<number | null> {
+    return getStoredServerPort();
+  },
+
+  async setServerPort(port: number | null | undefined): Promise<void> {
+    try {
+      await persistNumberSetting(SERVER_PORT_KEY, normalizeDiscoveredPort(port, DEFAULT_API_PORT));
+    } catch (error) {
+      console.error('Error setting companion port:', error);
+      throw error;
+    }
+  },
+
+  async setServerConnection(ip: string, port?: number | null): Promise<void> {
+    const trimmedIp = ip.trim();
+    const currentIp = normalizeStoredValue(await this.getServerAddress());
+    const currentPort = await this.getServerPort();
+    const resolvedPort =
+      port !== null && port !== undefined
+        ? normalizeDiscoveredPort(port, DEFAULT_API_PORT)
+        : normalizeDiscoveredPort(currentIp === trimmedIp ? currentPort : null, DEFAULT_API_PORT);
+
+    try {
+      await Promise.all([
+        persistStringSetting(SERVER_IP_KEY, trimmedIp),
+        persistNumberSetting(SERVER_PORT_KEY, resolvedPort),
+      ]);
+    } catch (error) {
+      console.error('Error setting companion connection:', error);
       throw error;
     }
   },
@@ -577,9 +1021,9 @@ const deviceService = {
   },
 
   async getCompanionHealth(serverIp?: string): Promise<any> {
-    const targetIp = await resolveTargetIp(serverIp);
-    const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/health`, {
-      timeout: 3000,
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/health`, {
+      timeout: COMPANION_HEALTH_TIMEOUT_MS,
       headers: {
         'Cache-Control': 'no-cache',
       },
@@ -589,11 +1033,11 @@ const deviceService = {
   },
 
   async getCompanionInfo(serverIp?: string): Promise<any> {
-    const targetIp = await resolveTargetIp(serverIp);
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
     const token = normalizeStoredValue(await this.getServerToken());
     try {
-      const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/info`, {
-        timeout: 3000,
+      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/info`, {
+        timeout: COMPANION_HEALTH_TIMEOUT_MS,
         headers: {
           'Cache-Control': 'no-cache',
           ...(token ? { [AUTH_HEADER]: token } : {}),
@@ -611,32 +1055,22 @@ const deviceService = {
     const firstDiscovery = discoveries[0] ?? null;
 
     if (firstDiscovery) {
-      await this.setServerAddress(firstDiscovery.serverIp);
+      await this.setServerConnection(firstDiscovery.serverIp, firstDiscovery.apiPort);
     }
 
     return firstDiscovery;
   },
 
   async discoverCompanions(): Promise<CompanionDiscoveryInfo[]> {
-    const discoveries: CompanionDiscoveryInfo[] = [];
-    const udpDiscoveries = await discoverCompanionsViaUdp();
-
-    discoveries.push(...udpDiscoveries);
-
     const storedIp = normalizeStoredValue(await this.getServerAddress());
-    if (storedIp) {
-      const storedDiscovery = await fetchCompanionHealthDiscovery(storedIp);
-      if (storedDiscovery) {
-        discoveries.push(storedDiscovery);
-      }
+    const storedPort = await this.getServerPort();
+    const firstAttempt = await discoverCompanionsOnce(storedIp, storedPort);
+    if (firstAttempt.length > 0) {
+      return firstAttempt;
     }
 
-    for (const subnet of DISCOVERY_SUBNETS) {
-      const subnetDiscoveries = await scanSubnetForCompanions(subnet);
-      discoveries.push(...subnetDiscoveries);
-    }
-
-    return mergeCompanionDiscoveries(discoveries);
+    await wait(DISCOVERY_RETRY_DELAY_MS);
+    return discoverCompanionsOnce(storedIp, storedPort);
   },
 
   async discoverCompanionServer(): Promise<string | null> {
@@ -645,26 +1079,38 @@ const deviceService = {
   },
 
   async checkPairing(serverIp?: string): Promise<any> {
-    const targetIp = await resolveTargetIp(serverIp);
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
+    const cacheKey = `${targetIp}:${targetPort}:${token}`;
+    const cachedResult = pairingValidationCache.get(cacheKey);
+
+    if (cachedResult && cachedResult.expiresAt > Date.now()) {
+      return cachedResult.data;
+    }
+
     try {
-      const response = await axios.get(`${buildBaseUrl(targetIp)}/v1/pairing/check`, {
-        timeout: 3000,
+      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/pairing/check`, {
+        timeout: COMPANION_PAIRING_TIMEOUT_MS,
         headers: buildAuthHeaders(token),
       });
 
+      pairingValidationCache.set(cacheKey, {
+        expiresAt: Date.now() + PAIRING_CACHE_TTL_MS,
+        data: response.data,
+      });
       return response.data;
     } catch (error) {
+      pairingValidationCache.delete(cacheKey);
       throw normalizeCompanionRequestError(error, 'Unable to verify the pairing token with the companion.');
     }
   },
 
   async activatePairedControls(serverIp?: string, tokenOverride?: string | null): Promise<any> {
-    const targetIp = await resolveTargetIp(serverIp);
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
     const token = normalizeStoredValue(tokenOverride) ?? await requireServerToken();
     try {
       const response = await axios.post(
-        `${buildBaseUrl(targetIp)}/v1/pairing/activate`,
+        `${buildBaseUrl(targetIp, targetPort)}/v1/pairing/activate`,
         {},
         {
           timeout: 5000,
@@ -680,8 +1126,9 @@ const deviceService = {
 
   async checkDeviceStatus(deviceIp: string): Promise<boolean> {
     try {
-      const response = await axios.get(`${buildBaseUrl(deviceIp)}/v1/health`, {
-        timeout: 3000,
+      const { port: targetPort } = await resolveTargetEndpoint(deviceIp);
+      const response = await axios.get(`${buildBaseUrl(deviceIp, targetPort)}/v1/health`, {
+        timeout: DEVICE_STATUS_TIMEOUT_MS,
         headers: {
           'Cache-Control': 'no-cache',
         },
@@ -695,11 +1142,11 @@ const deviceService = {
   },
 
   async sendWakeRequest(mac: string, serverIp?: string, options: WakeRequestOptions = {}): Promise<any> {
-    const targetIp = await resolveTargetIp(serverIp);
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
     try {
       const response = await axios.post(
-        `${buildBaseUrl(targetIp)}/v1/wake`,
+        `${buildBaseUrl(targetIp, targetPort)}/v1/wake`,
         {
           mac,
           broadcast: options.wakeAddress?.trim() || undefined,
@@ -718,7 +1165,7 @@ const deviceService = {
   },
 
   async sendCommandTo(targetIp: string | null | undefined, command: string, params: CommandParams = {}): Promise<any> {
-    const serverIp = await resolveTargetIp(targetIp);
+    const { ip: serverIp, port: serverPort } = await resolveTargetEndpoint(targetIp);
 
     if (command === 'get_status') {
       return this.getCompanionInfo(serverIp);
@@ -735,7 +1182,7 @@ const deviceService = {
 
     try {
       const payload = mapLegacyCommand(command, params);
-      const response = await axios.post(`${buildBaseUrl(serverIp)}/v1/command`, payload, {
+      const response = await axios.post(`${buildBaseUrl(serverIp, serverPort)}/v1/command`, payload, {
         headers: buildAuthHeaders(token),
         timeout: 5000,
       });
@@ -756,6 +1203,14 @@ const deviceService = {
 
   async sendMouseClick(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
     return this.sendCommandTo(undefined, 'mouse_click', { button });
+  },
+
+  async sendMouseButtonDown(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
+    return this.sendCommandTo(undefined, 'mouse_button', { button, action: 'down' });
+  },
+
+  async sendMouseButtonUp(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
+    return this.sendCommandTo(undefined, 'mouse_button', { button, action: 'up' });
   },
 
   async sendScroll(_deviceId: string, _deviceIp: string, amount: number): Promise<any> {

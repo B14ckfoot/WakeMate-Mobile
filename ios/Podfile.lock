@@ -87,6 +87,7 @@ PODS:
   - hermes-engine (0.81.5):
     - hermes-engine/Pre-built (= 0.81.5)
   - hermes-engine/Pre-built (0.81.5)
+  - Mute (0.6.1)
   - RCTDeprecation (0.81.5)
   - RCTRequired (0.81.5)
   - RCTTypeSafety (0.81.5):
@@ -1438,6 +1439,9 @@ PODS:
   - react-native-udp (4.1.7):
     - CocoaAsyncSocket
     - React-Core
+  - react-native-volume-manager (2.0.8):
+    - Mute
+    - React-Core
   - react-native-wake-on-lan (0.2.1):
     - hermes-engine
     - RCTRequired
@@ -2177,6 +2181,7 @@ DEPENDENCIES:
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-udp (from `../node_modules/react-native-udp`)
+  - react-native-volume-manager (from `../node_modules/react-native-volume-manager`)
   - react-native-wake-on-lan (from `../node_modules/react-native-wake-on-lan`)
   - react-native-webview (from `../node_modules/react-native-webview`)
   - React-NativeModulesApple (from `../node_modules/react-native/ReactCommon/react/nativemodule/core/platform/ios`)
@@ -2221,6 +2226,7 @@ DEPENDENCIES:
 SPEC REPOS:
   trunk:
     - CocoaAsyncSocket
+    - Mute
     - ZXingObjC
 
 EXTERNAL SOURCES:
@@ -2335,6 +2341,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-safe-area-context"
   react-native-udp:
     :path: "../node_modules/react-native-udp"
+  react-native-volume-manager:
+    :path: "../node_modules/react-native-volume-manager"
   react-native-wake-on-lan:
     :path: "../node_modules/react-native-wake-on-lan"
   react-native-webview:
@@ -2438,6 +2446,7 @@ SPEC CHECKSUMS:
   ExtensionStorage: 5796de20bf181317c376d693fedb64c6781a33ba
   FBLazyVector: e95a291ad2dadb88e42b06e0c5fb8262de53ec12
   hermes-engine: 9f4dfe93326146a1c99eb535b1cb0b857a3cd172
+  Mute: 20135a96076f140cc82bfc8b810e2d6150d8ec7e
   RCTDeprecation: 943572d4be82d480a48f4884f670135ae30bf990
   RCTRequired: 8f3cfc90cc25cf6e420ddb3e7caaaabc57df6043
   RCTTypeSafety: 16a4144ca3f959583ab019b57d5633df10b5e97c
@@ -2473,6 +2482,7 @@ SPEC CHECKSUMS:
   React-microtasksnativemodule: f775db9e991c6f3b8ccbc02bfcde22770f96e23b
   react-native-safe-area-context: 37e680fc4cace3c0030ee46e8987d24f5d3bdab2
   react-native-udp: 806f16ab890dd838bc073afcebd6a221d4965572
+  react-native-volume-manager: cdd3c3857158c1df7b9fbea071a9946395cee06c
   react-native-wake-on-lan: 73218818e1b8c72156a3c5b17b27bb8c52c93cb9
   react-native-webview: b29007f4723bca10872028067b07abacfa1cb35a
   React-NativeModulesApple: 8969913947d5b576de4ed371a939455a8daf28aa

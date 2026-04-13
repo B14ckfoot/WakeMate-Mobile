@@ -20,6 +20,11 @@ import { Device } from '../../src/types/device';
 import { useServer } from '../../src/context/ServerContext';
 import deviceService from '../services/deviceService';
 import {
+  inferDevicePlatformFromMetadata,
+  inferDevicePlatformFromName,
+  normalizeDevicePlatform,
+} from '../../src/utils/devicePlatform';
+import {
   DEFAULT_WAKE_PORT,
   getSuggestedWakeAddress,
   isValidIpAddress,
@@ -71,6 +76,7 @@ type CompanionCandidate = {
   wakePort: number | null;
   apiPort: number;
   version: string | null;
+  platform: Device['platform'];
 };
 
 const isRecord = (value: unknown): value is UnknownRecord =>
@@ -331,6 +337,7 @@ const extractCompanionFields = (info: unknown, fallbackIp: string) => {
     mac: rawMac ? normalizeMacAddress(rawMac) : '',
     wakeAddress,
     wakePort,
+    platform: inferDevicePlatformFromMetadata(preferredSource, name),
   };
 };
 
@@ -344,6 +351,7 @@ const buildScannedDevice = (fields: {
   mac: string;
   wakeAddress: string;
   wakePort?: number;
+  platform?: Device['platform'];
 }): Device | null => {
   const trimmedName = fields.name.trim();
   const trimmedPingIp = fields.pingIp.trim();
@@ -368,6 +376,7 @@ const buildScannedDevice = (fields: {
     wakePort: sanitizeWakePort(fields.wakePort, DEFAULT_WAKE_PORT),
     status: 'offline',
     type: 'wifi',
+    platform: normalizeDevicePlatform(fields.platform ?? trimmedName),
   };
 };
 
@@ -428,6 +437,7 @@ export default function AddDeviceScreen() {
   const applyDiscoveredCompanion = useCallback(async (discoveredCompanion: CompanionCandidate) => {
     const savedCompanionIp = discoveredCompanion.serverIp.trim();
     const hadDifferentServerIp = serverIp.trim() !== savedCompanionIp;
+    await deviceService.setServerConnection(savedCompanionIp, discoveredCompanion.apiPort);
     setServerIp(savedCompanionIp);
 
     let healthFields = {
@@ -436,18 +446,21 @@ export default function AddDeviceScreen() {
       mac: discoveredCompanion.macAddress || '',
       wakeAddress: discoveredCompanion.wakeAddress || getSuggestedWakeAddress(savedCompanionIp) || savedCompanionIp,
       wakePort: discoveredCompanion.wakePort ?? DEFAULT_WAKE_PORT,
+      platform: normalizeDevicePlatform(discoveredCompanion.platform ?? discoveredCompanion.deviceName),
     };
 
-    try {
-      const health = await deviceService.getCompanionHealth(savedCompanionIp);
-      const parsedHealthFields = extractCompanionFields(health, savedCompanionIp);
+    const [healthResult, infoResult] = await Promise.allSettled([
+      deviceService.getCompanionHealth(savedCompanionIp),
+      deviceService.getCompanionInfo(savedCompanionIp),
+    ]);
+
+    if (healthResult.status === 'fulfilled') {
+      const parsedHealthFields = extractCompanionFields(healthResult.value, savedCompanionIp);
       healthFields = {
         ...healthFields,
         ...parsedHealthFields,
         mac: parsedHealthFields.mac || healthFields.mac,
       };
-    } catch {
-      // Keep scanning even if the public health payload cannot be parsed.
     }
 
     let companionFields = {
@@ -455,17 +468,14 @@ export default function AddDeviceScreen() {
     };
     let protectedInfoNotice: string | null = null;
 
-    try {
-      const info = await deviceService.getCompanionInfo(savedCompanionIp);
-      companionFields = extractCompanionFields(info, savedCompanionIp);
-    } catch (error) {
-      if (!isUnauthorizedCompanionInfoError(error)) {
-        throw error;
-      }
-
+    if (infoResult.status === 'fulfilled') {
+      companionFields = extractCompanionFields(infoResult.value, savedCompanionIp);
+    } else if (isUnauthorizedCompanionInfoError(infoResult.reason)) {
       protectedInfoNotice = serverToken.trim()
         ? 'The saved pairing token was rejected by the companion, so only the network address could be filled automatically.'
         : 'This companion requires a pairing token to read device details, so only the network address could be filled automatically.';
+    } else if (healthResult.status === 'rejected') {
+      throw infoResult.reason;
     }
 
     const filledFields: string[] = [];
@@ -517,12 +527,15 @@ export default function AddDeviceScreen() {
       connectionNotes.push('Remote commands will work as soon as a pairing token is available.');
     }
 
+    const resolvedPlatform = normalizeDevicePlatform(companionFields.platform ?? healthFields.platform);
+
     const scannedDevice = buildScannedDevice({
       name: name.trim() || companionFields.name,
       pingIp: pingAddress.trim() || companionFields.pingIp,
       mac: mac.trim() || companionFields.mac,
       wakeAddress: wakeAddress.trim() || companionFields.wakeAddress,
       wakePort: companionFields.wakePort,
+      platform: resolvedPlatform,
     });
 
     if (shouldAttemptAutoSave && scannedDevice) {
@@ -652,6 +665,7 @@ export default function AddDeviceScreen() {
         wakePort: sanitizeWakePort(wakePort, DEFAULT_WAKE_PORT),
         status: 'offline',
         type: 'wifi',
+        platform: inferDevicePlatformFromName(name),
       };
 
       await deviceService.saveDevices([...devices, newDevice]);

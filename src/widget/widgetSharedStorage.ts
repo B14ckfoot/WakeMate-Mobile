@@ -16,6 +16,7 @@ type WidgetDeviceRecord = {
   wakePort: number;
   status: string;
   type: string;
+  platform: string;
 };
 
 const extensionStorage = new ExtensionStorage(WAKEMATE_APP_GROUP);
@@ -29,6 +30,7 @@ const toWidgetDeviceRecord = (device: Device): WidgetDeviceRecord => ({
   wakePort: device.wakePort,
   status: device.status,
   type: device.type,
+  platform: device.platform ?? 'unknown',
 });
 
 export const syncDevicesToWidgetStorage = (devices: Device[]): void => {

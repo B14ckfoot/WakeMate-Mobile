@@ -1,3 +1,5 @@
+export type DevicePlatform = 'windows' | 'mac' | 'linux' | 'unknown';
+
 export interface Device {
   id: string;
   name: string;
@@ -7,6 +9,7 @@ export interface Device {
   wakePort: number;
   status: 'online' | 'offline';
   type: 'wifi' | 'bluetooth';
+  platform?: DevicePlatform;
 }
 
 export interface DeviceCommand {

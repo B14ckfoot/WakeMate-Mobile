@@ -16,10 +16,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
 import SwipeableDeviceItem from '../../src/components/SwipeableDeviceItem';
+import { useServer } from '../../src/context/ServerContext';
 
 export default function DevicesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { isConnected, connectionError } = useServer();
   const [devices, setDevices] = useState<Device[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -141,10 +143,22 @@ export default function DevicesScreen() {
     ]);
   };
 
+  const handlePressDevice = useCallback((device: Device) => {
+    const canOpenControlsDirectly = isConnected && !connectionError && device.status === 'online';
+
+    if (canOpenControlsDirectly) {
+      router.push(`/devices/control/${device.id}`);
+      return;
+    }
+
+    router.push(`/devices/${device.id}`);
+  }, [connectionError, isConnected, router]);
+
   const renderDevice = ({ item }: { item: Device }) => (
     <SwipeableDeviceItem
       device={item}
       onDelete={handleDeleteDevice}
+      onPress={handlePressDevice}
       onLongPress={handleLongPress}
     />
   );

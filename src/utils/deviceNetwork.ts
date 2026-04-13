@@ -1,4 +1,5 @@
 import { Device } from '../types/device';
+import { normalizeDevicePlatform } from './devicePlatform';
 
 export const DEFAULT_WAKE_PORT = 9;
 
@@ -66,5 +67,6 @@ export const normalizeDevice = (device: DeviceSeed): Device => {
     wakePort: sanitizeWakePort(device.wakePort),
     status: device.status === 'online' ? 'online' : 'offline',
     type: device.type === 'bluetooth' ? 'bluetooth' : 'wifi',
+    platform: normalizeDevicePlatform(device.platform),
   };
 };
