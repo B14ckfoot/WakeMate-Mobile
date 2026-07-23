@@ -17,7 +17,8 @@
         ]
       },
       "infoPlist": {
-        "NSLocalNetworkUsageDescription": "WakeMATE needs local network access to discover your computer and send Wake-on-LAN packets."
+        "NSLocalNetworkUsageDescription": "WakeMATE needs local network access to discover your computer and send Wake-on-LAN packets.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

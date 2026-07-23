@@ -51,7 +51,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		XX3C49F596644F1073CB7FXX /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+		XX3C49F596644F1073CB7FXX /* Exceptions for "widget" folder in "wakematemobile" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				_shared/WakeMateShared.swift,
@@ -61,7 +61,18 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		XX86B34114F29CB9818589XX /* widget */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (XX3C49F596644F1073CB7FXX /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = widget; sourceTree = "<group>"; };
+		XX86B34114F29CB9818589XX /* widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				XX3C49F596644F1073CB7FXX /* Exceptions for "widget" folder in "wakematemobile" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = widget;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -421,7 +432,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG";
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_DEBUG -Xcc -Wno-nullability-completeness";
 				PRODUCT_BUNDLE_IDENTIFIER = com.anonymous.wakematemobile;
 				PRODUCT_NAME = wakematemobile;
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -464,7 +475,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE";
+				OTHER_SWIFT_FLAGS = "$(inherited) -D EXPO_CONFIGURATION_RELEASE -Xcc -Wno-nullability-completeness";
 				PRODUCT_BUNDLE_IDENTIFIER = com.anonymous.wakematemobile;
 				PRODUCT_NAME = wakematemobile;
 				PROVISIONING_PROFILE_SPECIFIER = "";
