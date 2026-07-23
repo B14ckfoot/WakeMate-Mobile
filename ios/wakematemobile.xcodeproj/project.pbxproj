@@ -75,11 +75,11 @@
 			);
 			target = 13B07F861A680F5B00A75B9A /* wakematemobile */;
 		};
-		XXAB91E9238D4A52A4F218XX /* Widget source exclusions */ = {
+		XXAB91E9238D4A52A4F218XX /* Exceptions for "widget" folder in "WakeMateWidgets" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				expo-target.config.js,
+				"expo-target.config.js",
 			);
 			target = XXE78FFDF366E3CA8D7395XX /* WakeMateWidgets */;
 		};
@@ -90,7 +90,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				XX3C49F596644F1073CB7FXX /* Exceptions for "widget" folder in "wakematemobile" target */,
-				XXAB91E9238D4A52A4F218XX /* Widget source exclusions */,
+				XXAB91E9238D4A52A4F218XX /* Exceptions for "widget" folder in "WakeMateWidgets" target */,
 			);
 			explicitFileTypes = {
 			};
