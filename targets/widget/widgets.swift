@@ -62,6 +62,7 @@ struct WakeMateWidgetEntryView: View {
     var body: some View {
         Group {
             switch family {
+#if os(iOS)
             case .accessoryInline:
                 Text(entry.resolvedDevice == nil ? "WakeMATE" : "Wake \(entry.displayName)")
             case .accessoryCircular:
@@ -88,6 +89,7 @@ struct WakeMateWidgetEntryView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
+#endif
             default:
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
@@ -165,12 +167,23 @@ struct WakeMateWidget: Widget {
         }
         .configurationDisplayName("Wake PC")
         .description("Wake a saved computer from your Home Screen or Lock Screen.")
-        .supportedFamilies([
+        .supportedFamilies(Self.supportedFamilies)
+    }
+
+    private static var supportedFamilies: [WidgetFamily] {
+#if os(iOS)
+        [
             .systemSmall,
             .systemMedium,
             .accessoryInline,
             .accessoryCircular,
             .accessoryRectangular
-        ])
+        ]
+#else
+        [
+            .systemSmall,
+            .systemMedium
+        ]
+#endif
     }
 }
