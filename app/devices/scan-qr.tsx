@@ -40,10 +40,36 @@ export default function ScanDeviceQrScreen() {
         return;
       }
 
+      // Pairing QR v2 also carries the pairing token and API port, so one
+      // scan can save the device AND pair with the companion.
+      const parsedRecord =
+        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      const pairingToken =
+        typeof parsedRecord?.token === 'string' && parsedRecord.token.trim()
+          ? parsedRecord.token.trim()
+          : null;
+      const rawApiPort = parsedRecord?.api_port;
+      const apiPort =
+        typeof rawApiPort === 'number' && Number.isInteger(rawApiPort) && rawApiPort > 0 && rawApiPort <= 65535
+          ? rawApiPort
+          : null;
+
       const fields = extractCompanionFields(parsed, '');
       const scannedDevice = buildScannedDevice(fields);
 
       if (!scannedDevice) {
+        if (pairingToken) {
+          await deviceService.setServerToken(pairingToken);
+          Alert.alert(
+            'Pairing Token Saved',
+            'This QR code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
+            [{ text: 'OK', onPress: () => router.back() }]
+          );
+          return;
+        }
+
         Alert.alert(
           'Incomplete Device Info',
           "This QR code is missing required details (device name, MAC address, or IP address). Ask the companion app to regenerate its QR code.",
@@ -70,9 +96,30 @@ export default function ScanDeviceQrScreen() {
 
         await deviceService.saveDevices(nextDevices);
 
+        let pairingSummary = '';
+        if (pairingToken) {
+          try {
+            await deviceService.setServerConnection(savedDevice.ip, apiPort);
+            await deviceService.setServerToken(pairingToken);
+            await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
+            const approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
+
+            if (approval === 'approved' || approval === 'unsupported') {
+              pairingSummary = ' Remote controls are enabled.';
+            } else if (approval === 'denied') {
+              pairingSummary = ' The pairing request was denied on the computer; remote controls stay off.';
+            } else {
+              pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
+            }
+          } catch (pairingError) {
+            console.error('Error pairing from QR scan:', pairingError);
+            pairingSummary = ' The pairing token was saved, but pairing could not be completed yet — finish it in Settings.';
+          }
+        }
+
         Alert.alert(
           existingDevice ? 'Device Updated' : 'Device Saved',
-          `${savedDevice.name} is now in your saved devices.`,
+          `${savedDevice.name} is now in your saved devices.${pairingSummary}`,
           [{ text: 'OK', onPress: () => router.replace('/devices') }]
         );
       } catch (error) {
@@ -132,7 +179,7 @@ export default function ScanDeviceQrScreen() {
         {isProcessing ? (
           <View style={styles.processingOverlay}>
             <ActivityIndicator size="large" color="#ffffff" />
-            <Text style={styles.processingText}>Saving device...</Text>
+            <Text style={styles.processingText}>Saving device... If a pairing dialog appears on the computer, click Yes there.</Text>
           </View>
         ) : null}
       </View>

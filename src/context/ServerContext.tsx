@@ -96,7 +96,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
       if (!trimmedServerToken) {
         setIsConnected(true);
-        setConnectionError('Companion reachable. Add the pairing token from wakemate.config.json to enable commands.');
+        setConnectionError('Companion reachable. Scan the pairing QR code from the WakeMATE tray icon to enable commands.');
         setLastStatus('success');
         return true;
       }

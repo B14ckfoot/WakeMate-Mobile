@@ -21,8 +21,8 @@ const DEFAULT_API_PORT = 7777;
 const AUTH_HEADER = 'x-wakemate-token';
 const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
 const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Add it in Settings before using remote controls.';
-const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Add the api_token from wakemate.config.json in Settings.';
-const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Update the api_token in Settings before using remote controls.';
+const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. In Settings, scan the pairing QR code shown by the WakeMATE tray icon on your computer.';
+const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Re-scan the pairing QR code from the WakeMATE tray icon in Settings.';
 const DISCOVERY_NAME_KEYS = [
   'name',
   'hostname',
@@ -1102,6 +1102,71 @@ const deviceService = {
     } catch (error) {
       pairingValidationCache.delete(cacheKey);
       throw normalizeCompanionRequestError(error, 'Unable to verify the pairing token with the companion.');
+    }
+  },
+
+  async getPairingStatus(serverIp?: string): Promise<{
+    approval: 'idle' | 'pending' | 'approved' | 'denied' | '';
+    allowInputCommands: boolean;
+    allowPowerCommands: boolean;
+  } | null> {
+    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const token = await requireServerToken();
+
+    try {
+      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/pairing/status`, {
+        timeout: COMPANION_PAIRING_TIMEOUT_MS,
+        headers: buildAuthHeaders(token),
+      });
+
+      const data = response.data?.data;
+      if (!isRecord(data)) {
+        return null;
+      }
+
+      const approval = typeof data.approval === 'string' ? data.approval : '';
+      return {
+        approval: approval as 'idle' | 'pending' | 'approved' | 'denied' | '',
+        allowInputCommands: data.allow_input_commands === true,
+        allowPowerCommands: data.allow_power_commands === true,
+      };
+    } catch (error) {
+      if (isAxiosError(error) && error.response?.status === 404) {
+        // Older companion without /v1/pairing/status.
+        return null;
+      }
+      throw normalizeCompanionRequestError(error, 'Unable to check the pairing status with the companion.');
+    }
+  },
+
+  async waitForPairingApproval(
+    serverIp?: string,
+    options: { timeoutMs?: number; intervalMs?: number } = {}
+  ): Promise<'approved' | 'denied' | 'timeout' | 'unsupported'> {
+    const timeoutMs = options.timeoutMs ?? 45000;
+    const intervalMs = options.intervalMs ?? 2000;
+    const deadline = Date.now() + timeoutMs;
+
+    for (;;) {
+      const status = await this.getPairingStatus(serverIp);
+
+      if (!status) {
+        return 'unsupported';
+      }
+
+      if (status.approval === 'approved' || status.allowInputCommands || status.allowPowerCommands) {
+        return 'approved';
+      }
+
+      if (status.approval === 'denied') {
+        return 'denied';
+      }
+
+      if (Date.now() + intervalMs > deadline) {
+        return 'timeout';
+      }
+
+      await wait(intervalMs);
     }
   },
 

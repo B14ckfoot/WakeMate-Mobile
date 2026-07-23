@@ -182,17 +182,31 @@ export default function SettingsScreen() {
     setServerToken(nextServerToken);
   }, [setServerIp, setServerToken]);
 
-  const pairAndEnableRemoteControls = useCallback(async (nextServerIp: string, nextServerToken: string) => {
+  const pairAndEnableRemoteControls = useCallback(async (
+    nextServerIp: string,
+    nextServerToken: string
+  ): Promise<'approved' | 'denied' | 'timeout' | 'unreachable'> => {
     await persistConnectionSettings(nextServerIp, nextServerToken);
 
     const connected = await testConnection(nextServerIp, nextServerToken);
     if (!connected) {
-      return false;
+      return 'unreachable';
     }
 
     await deviceService.activatePairedControls(nextServerIp, nextServerToken);
+
+    // The companion returns "pending_approval" and shows a dialog on the
+    // desktop; wait for the actual Yes/No instead of assuming success.
+    const approval = await deviceService.waitForPairingApproval(nextServerIp);
     await testConnection(nextServerIp, nextServerToken);
-    return true;
+
+    // Older companions have no status endpoint; keep the legacy optimistic
+    // behavior for them rather than reporting a false failure.
+    if (approval === 'unsupported') {
+      return 'approved';
+    }
+
+    return approval;
   }, [persistConnectionSettings, testConnection]);
 
   const handleUpdateServerConnection = async () => {
@@ -211,10 +225,22 @@ export default function SettingsScreen() {
 
     try {
       if (nextServerToken) {
-        const paired = await pairAndEnableRemoteControls(nextServerIp, nextServerToken);
-        if (paired) {
+        const result = await pairAndEnableRemoteControls(nextServerIp, nextServerToken);
+
+        if (result === 'approved') {
           Alert.alert('Success', 'Connected to the WakeMATE companion and enabled remote controls for this computer.');
+        } else if (result === 'denied') {
+          Alert.alert(
+            'Pairing Denied',
+            'The pairing request was denied on the computer. If that was you, start over and click Yes on the WakeMATE dialog.'
+          );
+        } else if (result === 'timeout') {
+          Alert.alert(
+            'Waiting for Approval',
+            'The companion is still waiting for someone to approve the pairing dialog on the computer. Approve it there, then tap "Save and Test" again.'
+          );
         }
+        // 'unreachable': testConnection already surfaced the error state.
         return;
       }
 
@@ -320,17 +346,23 @@ export default function SettingsScreen() {
       }
 
       try {
-        setTokenScanNotice('Pairing token scanned. Enabling remote controls for this computer...');
-        const paired = await pairAndEnableRemoteControls(nextServerIp, token);
+        setTokenScanNotice('Pairing token scanned. Approve the pairing dialog on your computer to finish...');
+        const result = await pairAndEnableRemoteControls(nextServerIp, token);
 
-        if (paired) {
+        if (result === 'approved') {
           setTokenScanNotice(null);
           tokenScanLockedRef.current = false;
           router.back();
           return;
         }
 
-        setTokenScanNotice('Pairing token scanned, but the companion could not be reached yet. Check the saved IP and try again.');
+        if (result === 'denied') {
+          setTokenScanNotice('The pairing request was denied on the computer. Scan again and click Yes on the WakeMATE dialog to enable remote controls.');
+        } else if (result === 'timeout') {
+          setTokenScanNotice('Still waiting for approval on the computer. Approve the WakeMATE dialog there, then tap "Save and Test".');
+        } else {
+          setTokenScanNotice('Pairing token scanned, but the companion could not be reached yet. Check the saved IP and try again.');
+        }
       } catch (error) {
         console.error('Error enabling paired controls after QR scan:', error);
         const message = error instanceof Error
@@ -536,7 +568,7 @@ export default function SettingsScreen() {
               style={styles.input}
               value={serverTokenInput}
               onChangeText={setServerTokenInput}
-              placeholder="Token from wakemate.config.json"
+              placeholder="Scan the QR from the WakeMATE tray"
               placeholderTextColor="#6b7280"
               autoCapitalize="none"
               autoCorrect={false}
@@ -546,7 +578,7 @@ export default function SettingsScreen() {
               <Text style={styles.tokenScanButtonText}>Scan QR Code</Text>
             </TouchableOpacity>
             <Text style={styles.helpText}>
-              Copy the `api_token` value from `wakemate.config.json`, or scan a QR code that contains the token.
+              On your computer, click the WakeMATE tray icon and choose &quot;View Pairing QR Code&quot;, then scan it here. Pasting a token manually also works.
             </Text>
             {tokenScanNotice ? <Text style={styles.infoText}>{tokenScanNotice}</Text> : null}
 

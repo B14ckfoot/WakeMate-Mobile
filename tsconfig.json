@@ -15,5 +15,13 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
-, "src/components/NetworkScanner.js", "src/hooks/useAutoDiscoverServer.js"  ]
+  ],
+  // Dead code slated for deletion — see WAKE_MATE_COMPANION_ARCHITECTURE_AUDIT.md §13.
+  // These files are imported nowhere; excluded so they cannot break type checking.
+  "exclude": [
+    "node_modules",
+    "src/components/MouseKeyboardScreen.tsx",
+    "src/components/PowerControls.tsx",
+    "src/components/ServerDebugComponent.tsx"
+  ]
 }
