@@ -73,6 +73,8 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - ExpoSecureStore (15.0.8):
+    - ExpoModulesCore
   - ExpoSplashScreen (31.0.13):
     - ExpoModulesCore
   - ExpoSymbols (1.0.8):
@@ -2117,6 +2119,8 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - WakemateTls (0.1.0):
+    - ExpoModulesCore
   - Yoga (0.0.0)
   - ZXingObjC/Core (3.6.9)
   - ZXingObjC/OneD (3.6.9):
@@ -2138,6 +2142,7 @@ DEPENDENCIES:
   - ExpoLinearGradient (from `../node_modules/expo-linear-gradient/ios`)
   - ExpoLinking (from `../node_modules/expo-linking/ios`)
   - ExpoModulesCore (from `../node_modules/expo-modules-core`)
+  - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
   - ExpoSymbols (from `../node_modules/expo-symbols/ios`)
   - ExpoSystemUI (from `../node_modules/expo-system-ui/ios`)
@@ -2221,6 +2226,7 @@ DEPENDENCIES:
   - RNScreens (from `../node_modules/react-native-screens`)
   - RNSVG (from `../node_modules/react-native-svg`)
   - RNWorklets (from `../node_modules/react-native-worklets`)
+  - WakemateTls (from `../modules/wakemate-tls/ios`)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:
@@ -2256,6 +2262,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-linking/ios"
   ExpoModulesCore:
     :path: "../node_modules/expo-modules-core"
+  ExpoSecureStore:
+    :path: "../node_modules/expo-secure-store/ios"
   ExpoSplashScreen:
     :path: "../node_modules/expo-splash-screen/ios"
   ExpoSymbols:
@@ -2421,6 +2429,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native-svg"
   RNWorklets:
     :path: "../node_modules/react-native-worklets"
+  WakemateTls:
+    :path: "../modules/wakemate-tls/ios"
   Yoga:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
@@ -2439,6 +2449,7 @@ SPEC CHECKSUMS:
   ExpoLinearGradient: 809102bdb979f590083af49f7fa4805cd931bd58
   ExpoLinking: 8f0aaf69aa56f832913030503b6263dc6f647f37
   ExpoModulesCore: f3da4f1ab5a8375d0beafab763739dbee8446583
+  ExpoSecureStore: d32f751874a2ceb5aaeebeb3578e165c1ba2b24a
   ExpoSplashScreen: bc3cffefca2716e5f22350ca109badd7e50ec14d
   ExpoSymbols: 349ee2b4d7d5ff3ea8436467914f8a67635aa354
   ExpoSystemUI: 2ad325f361a2fcd96a464e8574e19935c461c9cc
@@ -2522,6 +2533,7 @@ SPEC CHECKSUMS:
   RNScreens: d8d6f1792f6e7ac12b0190d33d8d390efc0c1845
   RNSVG: 31d6639663c249b7d5abc9728dde2041eb2a3c34
   RNWorklets: 76fce72926e28e304afb44f0da23b2d24f2c1fa0
+  WakemateTls: 5cc59699b14ebf756afa6f9745e2d42ab44f4aed
   Yoga: 5934998fbeaef7845dbf698f698518695ab4cd1a
   ZXingObjC: 8898711ab495761b2dbbdec76d90164a6d7e14c5
 
