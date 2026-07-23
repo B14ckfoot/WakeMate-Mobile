@@ -18,7 +18,7 @@
 		XX1A6800511A685AB346D2XX /* AppIntents.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = XXA12889081EB894481655XX /* AppIntents.framework */; };
 		XX3C562DEF346B45594832XX /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = XXCAF23C3FC41F82140FA1XX /* ActivityKit.framework */; };
 		XX6A44985675A04437B8C4XX /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = XX4DFF38D47332D6BF0183XX /* SwiftUI.framework */; };
-		XX910063F3777F43D4758FXX /* WakeMateWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = XX45E20896D4889F109A30XX /* WakeMateWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		XX910063F3777F43D4758FXX /* WakeMateWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = XX45E20896D4889F109A30XX /* WakeMateWidgets.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -481,6 +481,7 @@
 /* Begin PBXTargetDependency section */
 		XXF138B5E25F0EBCDEB197XX /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
+			platformFilter = ios;
 			target = XXE78FFDF366E3CA8D7395XX /* WakeMateWidgets */;
 			targetProxy = XX1960F68A0041DF40B897XX /* PBXContainerItemProxy */;
 		};
@@ -744,6 +745,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.anonymous.wakematemobile.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -788,6 +792,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.anonymous.wakematemobile.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

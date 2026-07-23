@@ -58,6 +58,7 @@
       "expo-font",
       "expo-web-browser",
       "@bacons/apple-targets",
+      "./plugins/withIosOnlyWidget",
       "./plugins/withQuotedReactNativeBundleScript",
       "expo-secure-store"
     ],
