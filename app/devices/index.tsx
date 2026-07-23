@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { Plus, RefreshCw, Search, Settings } from 'lucide-react-native';
+import { Plus, RefreshCw, ScanQrCode, Search, Settings } from 'lucide-react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
@@ -176,8 +176,9 @@ export default function DevicesScreen() {
         <View style={styles.brandPanel}>
           <View style={styles.brandRow}>
             <View style={styles.brandIconWrap}>
+              <View style={styles.brandIconHalo} />
               <Image
-                source={require('../../assets/images/MenuBar.ICON.png')}
+                source={require('../../assets/images/wakemate-mark-transparent.png')}
                 style={styles.brandIcon}
                 resizeMode="contain"
               />
@@ -245,8 +246,10 @@ export default function DevicesScreen() {
         ) : (
           <View style={styles.emptyContainer}>
             <View style={styles.emptyLogoWrap}>
+              <View style={styles.emptyLogoHaloOuter} />
+              <View style={styles.emptyLogoHaloInner} />
               <Image
-                source={require('../../assets/images/MenuBar.ICON.png')}
+                source={require('../../assets/images/wakemate-mark-transparent.png')}
                 style={styles.emptyLogo}
                 resizeMode="contain"
               />
@@ -265,14 +268,25 @@ export default function DevicesScreen() {
           },
         ]}
       >
-        <TouchableOpacity
-          style={[styles.bottomButton, styles.secondaryBottomButton]}
-          onPress={() => router.push('/devices/add?scan=1')}
-          accessibilityLabel="Scan network and auto fill device info"
-        >
-          <Search size={18} color="#67e8f9" />
-          <Text style={styles.secondaryBottomButtonText}>Scan Network</Text>
-        </TouchableOpacity>
+        <View style={styles.bottomBarRow}>
+          <TouchableOpacity
+            style={[styles.bottomButton, styles.halfBottomButton, styles.secondaryBottomButton]}
+            onPress={() => router.push('/devices/add?scan=1')}
+            accessibilityLabel="Scan network and auto fill device info"
+          >
+            <Search size={18} color="#67e8f9" />
+            <Text style={styles.secondaryBottomButtonText}>Scan Network</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.bottomButton, styles.halfBottomButton, styles.secondaryBottomButton]}
+            onPress={() => router.push('/devices/scan-qr')}
+            accessibilityLabel="Scan a device QR code"
+          >
+            <ScanQrCode size={18} color="#67e8f9" />
+            <Text style={styles.secondaryBottomButtonText}>Scan QR Code</Text>
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={[styles.bottomButton, styles.primaryBottomButton]}
@@ -326,18 +340,29 @@ const styles = StyleSheet.create({
     paddingLeft: 14,
   },
   brandIconWrap: {
-    width: 68,
-    height: 68,
-    borderRadius: 18,
-    backgroundColor: '#04080b',
-    borderWidth: 1,
-    borderColor: '#17323b',
+    width: 76,
+    height: 76,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  brandIconHalo: {
+    position: 'absolute',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(8, 145, 178, 0.14)',
+    shadowColor: '#22d3ee',
+    shadowOpacity: 0.42,
+    shadowRadius: 18,
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
   },
   brandIcon: {
-    width: 48,
-    height: 48,
+    width: 72,
+    height: 72,
   },
   eyebrow: {
     fontSize: 12,
@@ -412,19 +437,38 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   emptyLogoWrap: {
-    width: 92,
-    height: 92,
-    borderRadius: 24,
-    backgroundColor: '#0b1217',
-    borderWidth: 1,
-    borderColor: '#17323b',
+    width: 136,
+    height: 136,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 20,
+    position: 'relative',
+    marginBottom: 16,
+  },
+  emptyLogoHaloOuter: {
+    position: 'absolute',
+    width: 132,
+    height: 132,
+    borderRadius: 66,
+    borderWidth: 1,
+    borderColor: 'rgba(34, 211, 238, 0.11)',
+  },
+  emptyLogoHaloInner: {
+    position: 'absolute',
+    width: 98,
+    height: 98,
+    borderRadius: 49,
+    backgroundColor: 'rgba(8, 145, 178, 0.12)',
+    shadowColor: '#22d3ee',
+    shadowOpacity: 0.48,
+    shadowRadius: 28,
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
   },
   emptyLogo: {
-    width: 64,
-    height: 64,
+    width: 124,
+    height: 124,
   },
   emptyText: {
     color: '#f8fbff',
@@ -439,7 +483,6 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   bottomBar: {
-    flexDirection: 'row',
     gap: 12,
     paddingHorizontal: 16,
     paddingTop: 12,
@@ -447,13 +490,19 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#14252d',
   },
+  bottomBarRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
   bottomButton: {
-    flex: 1,
     borderRadius: 14,
     paddingVertical: 15,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  halfBottomButton: {
+    flex: 1,
   },
   secondaryBottomButton: {
     backgroundColor: '#0d171d',
