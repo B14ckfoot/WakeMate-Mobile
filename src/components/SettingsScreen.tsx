@@ -38,6 +38,7 @@ import {
   normalizeMacAddress,
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
+import { getThisPhoneDisplayName } from '../utils/deviceIdentity';
 import { parsePairingQrConnection } from '../utils/pairingQr';
 
 export default function SettingsScreen() {
@@ -113,6 +114,29 @@ export default function SettingsScreen() {
     const connected = await testConnection(nextServerIp, nextServerToken);
     if (!connected) {
       return 'unreachable';
+    }
+
+    // Protocol v3: exchange the scanned QR token for this phone's own
+    // token, so this phone can later be revoked individually from the
+    // companion tray. Older companions fall back to the shared token.
+    const enrollment = await deviceService.enrollDevice(
+      nextServerIp,
+      getThisPhoneDisplayName()
+    );
+
+    if (enrollment) {
+      const approval = await deviceService.waitForPairingApproval(nextServerIp, {
+        deviceId: enrollment.deviceId,
+      });
+
+      if (approval === 'approved') {
+        await persistConnectionSettings(nextServerIp, enrollment.deviceToken);
+        await testConnection(nextServerIp, enrollment.deviceToken);
+        return 'approved';
+      }
+
+      await testConnection(nextServerIp, nextServerToken);
+      return approval === 'unsupported' ? 'approved' : approval;
     }
 
     await deviceService.activatePairedControls(nextServerIp, nextServerToken);

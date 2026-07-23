@@ -1310,7 +1310,7 @@ const deviceService = {
     }
   },
 
-  async getPairingStatus(serverIp?: string): Promise<{
+  async getPairingStatus(serverIp?: string, deviceId?: string | null): Promise<{
     approval: 'idle' | 'pending' | 'approved' | 'denied' | '';
     allowInputCommands: boolean;
     allowPowerCommands: boolean;
@@ -1321,12 +1321,16 @@ const deviceService = {
       tlsFingerprint,
     } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
+    const trimmedDeviceId = deviceId?.trim();
+    const statusPath = trimmedDeviceId
+      ? `/v1/pairing/status?device_id=${encodeURIComponent(trimmedDeviceId)}`
+      : '/v1/pairing/status';
 
     try {
       const response = await requestCompanion<any>({
         ip: targetIp,
         port: targetPort,
-        path: '/v1/pairing/status',
+        path: statusPath,
         timeoutMs: COMPANION_PAIRING_TIMEOUT_MS,
         tlsFingerprint,
         headers: buildAuthHeaders(token),
@@ -1354,20 +1358,28 @@ const deviceService = {
 
   async waitForPairingApproval(
     serverIp?: string,
-    options: { timeoutMs?: number; intervalMs?: number } = {}
+    options: { timeoutMs?: number; intervalMs?: number; deviceId?: string | null } = {}
   ): Promise<'approved' | 'denied' | 'timeout' | 'unsupported'> {
     const timeoutMs = options.timeoutMs ?? 45000;
     const intervalMs = options.intervalMs ?? 2000;
+    const deviceId = options.deviceId?.trim() || null;
     const deadline = Date.now() + timeoutMs;
 
     for (;;) {
-      const status = await this.getPairingStatus(serverIp);
+      const status = await this.getPairingStatus(serverIp, deviceId);
 
       if (!status) {
         return 'unsupported';
       }
 
-      if (status.approval === 'approved' || status.allowInputCommands || status.allowPowerCommands) {
+      // The capability-flag shortcut only applies to the legacy global
+      // state: with a device_id, flags being on says nothing about whether
+      // THIS enrollment was approved.
+      const approved = deviceId
+        ? status.approval === 'approved'
+        : status.approval === 'approved' || status.allowInputCommands || status.allowPowerCommands;
+
+      if (approved) {
         return 'approved';
       }
 
@@ -1380,6 +1392,48 @@ const deviceService = {
       }
 
       await wait(intervalMs);
+    }
+  },
+
+  /**
+   * Requests a per-device token (protocol v3). Returns null when the
+   * companion predates enrollment, so callers can fall back to the shared
+   * QR token flow.
+   */
+  async enrollDevice(
+    serverIp?: string,
+    deviceName?: string | null
+  ): Promise<{ deviceId: string; deviceToken: string } | null> {
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
+    const token = await requireServerToken();
+
+    try {
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/pairing/enroll',
+        method: 'POST',
+        data: { device_name: deviceName?.trim() || null },
+        timeoutMs: 5000,
+        tlsFingerprint,
+        headers: buildAuthHeaders(token),
+      });
+
+      const data = response.data?.data;
+      const deviceId = isRecord(data) ? toCandidateString(data.device_id) : null;
+      const deviceToken = isRecord(data) ? toCandidateString(data.device_token) : null;
+
+      return deviceId && deviceToken ? { deviceId, deviceToken } : null;
+    } catch (error) {
+      if (isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 405)) {
+        // Older companion without per-device enrollment.
+        return null;
+      }
+      throw normalizeCompanionRequestError(error, 'Unable to start pairing with the companion.');
     }
   },
 

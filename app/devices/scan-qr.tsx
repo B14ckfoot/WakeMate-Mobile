@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import deviceService from '../services/deviceService';
 import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
+import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
 import { parsePairingQrConnection } from '../../src/utils/pairingQr';
 
 export default function ScanDeviceQrScreen() {
@@ -108,8 +109,28 @@ export default function ScanDeviceQrScreen() {
             await deviceService.setServerConnection(savedDevice.ip, connectionPort);
             await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
             await deviceService.setServerToken(pairingToken);
-            await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
-            const approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
+
+            // Protocol v3: swap the QR token for a per-device token so this
+            // phone can be revoked individually from the companion tray.
+            // Older companions fall back to the shared-token activation.
+            const enrollment = await deviceService.enrollDevice(
+              savedDevice.ip,
+              getThisPhoneDisplayName()
+            );
+
+            let approval: 'approved' | 'denied' | 'timeout' | 'unsupported';
+            if (enrollment) {
+              approval = await deviceService.waitForPairingApproval(savedDevice.ip, {
+                timeoutMs: 30000,
+                deviceId: enrollment.deviceId,
+              });
+              if (approval === 'approved') {
+                await deviceService.setServerToken(enrollment.deviceToken);
+              }
+            } else {
+              await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
+              approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
+            }
 
             if (approval === 'approved' || approval === 'unsupported') {
               pairingSummary = ' Remote controls are enabled.';
