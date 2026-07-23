@@ -9,7 +9,7 @@ module.exports = (config) => {
     name: 'WakeMateWidgets',
     displayName: 'WakeMATE',
     bundleIdentifier: '.widget',
-    deploymentTarget: '18.0',
+    deploymentTarget: '17.0',
     icon: '../../assets/images/icon.png',
     colors: {
       $accent: '#3ad27a',
