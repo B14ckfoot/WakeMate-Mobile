@@ -13,6 +13,13 @@ interface ServerContextType {
   connectionError: string | null;
   testConnection: (nextIp?: string, nextToken?: string) => Promise<boolean>;
   runServerDiagnostics: () => Promise<any>;
+  /**
+   * Re-reads the saved connection from storage into context state. Call
+   * after any flow that writes the connection through deviceService directly
+   * (e.g. the device-QR pairing screen), so Settings and connection state
+   * reflect the scanned values without any manual re-entry.
+   */
+  refreshFromStorage: () => Promise<void>;
   lastStatus: 'success' | 'error' | 'pending' | null;
 }
 
@@ -30,30 +37,40 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
   const [lastStatus, setLastStatus] = useState<'success' | 'error' | 'pending' | null>(null);
   const [isHydrated, setIsHydrated] = useState(false);
 
+  const refreshFromStorage = useCallback(async (): Promise<void> => {
+    try {
+      const [savedIp, savedToken] = await Promise.all([
+        deviceService.getServerAddress(),
+        deviceService.getServerToken(),
+      ]);
+
+      const nextIp = savedIp?.trim() ?? '';
+      const nextToken = savedToken?.trim() ?? '';
+
+      // Only push non-empty values into state on refresh; an empty storage
+      // read must not blank out values the user is mid-way through typing.
+      if (nextIp) {
+        setServerIp(nextIp);
+      }
+      if (nextToken) {
+        setServerToken(nextToken);
+      }
+    } catch (error) {
+      console.error('Error loading companion settings:', error);
+    }
+  }, []);
+
   useEffect(() => {
     const loadConnectionSettings = async () => {
       try {
-        const [savedIp, savedToken] = await Promise.all([
-          deviceService.getServerAddress(),
-          deviceService.getServerToken(),
-        ]);
-
-        if (savedIp) {
-          setServerIp(savedIp);
-        }
-
-        if (savedToken) {
-          setServerToken(savedToken);
-        }
-      } catch (error) {
-        console.error('Error loading companion settings:', error);
+        await refreshFromStorage();
       } finally {
         setIsHydrated(true);
       }
     };
 
     loadConnectionSettings();
-  }, []);
+  }, [refreshFromStorage]);
 
   const resolveConnectionEndpoint = useCallback(async (nextIp: string): Promise<{
     port: number;
@@ -230,6 +247,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         connectionError,
         testConnection,
         runServerDiagnostics,
+        refreshFromStorage,
         lastStatus,
       }}
     >
