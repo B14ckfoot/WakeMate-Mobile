@@ -55,18 +55,22 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     loadConnectionSettings();
   }, []);
 
-  const resolveConnectionPort = useCallback(async (nextIp: string): Promise<number> => {
+  const resolveConnectionEndpoint = useCallback(async (nextIp: string): Promise<{
+    port: number;
+    tlsFingerprint: string | null;
+  }> => {
     const trimmedIp = nextIp.trim();
-    const [savedIp, savedPort] = await Promise.all([
+    const [savedIp, savedPort, tlsFingerprint] = await Promise.all([
       deviceService.getServerAddress(),
       deviceService.getServerPort(),
+      deviceService.getServerTlsFingerprint(),
     ]);
 
     if (savedIp?.trim() === trimmedIp && savedPort) {
-      return savedPort;
+      return { port: savedPort, tlsFingerprint };
     }
 
-    return DEFAULT_COMPANION_PORT;
+    return { port: DEFAULT_COMPANION_PORT, tlsFingerprint: null };
   }, []);
 
   const testConnection = useCallback(async (nextIp: string = serverIp, nextToken: string = serverToken): Promise<boolean> => {
@@ -84,9 +88,14 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
     try {
       setConnectionError(null);
-      const targetPort = await resolveConnectionPort(trimmedServerIp);
+      const { port: targetPort, tlsFingerprint } =
+        await resolveConnectionEndpoint(trimmedServerIp);
 
-      const pingResult = await pingServer(trimmedServerIp, targetPort);
+      const pingResult = await pingServer(
+        trimmedServerIp,
+        targetPort,
+        tlsFingerprint
+      );
       if (!pingResult.success) {
         setIsConnected(false);
         setConnectionError(pingResult.message);
@@ -101,7 +110,12 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         return true;
       }
 
-      const pairingResult = await testCommandEndpoint(trimmedServerIp, trimmedServerToken, targetPort);
+      const pairingResult = await testCommandEndpoint(
+        trimmedServerIp,
+        trimmedServerToken,
+        targetPort,
+        tlsFingerprint
+      );
       if (pairingResult.success) {
         setIsConnected(true);
         setConnectionError(null);
@@ -130,7 +144,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
 
       return false;
     }
-  }, [resolveConnectionPort, serverIp, serverToken]);
+  }, [resolveConnectionEndpoint, serverIp, serverToken]);
 
   useEffect(() => {
     const syncConnectionSettings = async () => {
@@ -169,8 +183,14 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     }
 
     try {
-      const targetPort = await resolveConnectionPort(serverIp);
-      const results = await runDiagnostics(serverIp, serverToken || undefined, targetPort);
+      const { port: targetPort, tlsFingerprint } =
+        await resolveConnectionEndpoint(serverIp);
+      const results = await runDiagnostics(
+        serverIp,
+        serverToken || undefined,
+        targetPort,
+        tlsFingerprint
+      );
       setIsConnected(results.overall);
 
       if (!results.overall) {

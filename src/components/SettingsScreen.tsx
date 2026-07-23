@@ -38,85 +38,7 @@ import {
   normalizeMacAddress,
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
-
-const SCANNABLE_TOKEN_KEYS = ['api_token', 'token', 'pairing_token', 'pairingToken', 'serverToken'] as const;
-
-const getScannableString = (value: unknown): string | null => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmedValue = value.trim();
-  return trimmedValue ? trimmedValue : null;
-};
-
-const extractTokenFromObject = (value: Record<string, unknown>): string | null => {
-  for (const key of SCANNABLE_TOKEN_KEYS) {
-    const token = getScannableString(value[key]);
-    if (token) {
-      return token;
-    }
-  }
-
-  for (const nestedValue of Object.values(value)) {
-    if (nestedValue && typeof nestedValue === 'object' && !Array.isArray(nestedValue)) {
-      const token = extractTokenFromObject(nestedValue as Record<string, unknown>);
-      if (token) {
-        return token;
-      }
-    }
-  }
-
-  return null;
-};
-
-const extractTokenFromQrData = (rawData: string): string | null => {
-  const trimmedData = rawData.trim();
-  if (!trimmedData) {
-    return null;
-  }
-
-  try {
-    const parsedData = JSON.parse(trimmedData);
-    if (parsedData && typeof parsedData === 'object' && !Array.isArray(parsedData)) {
-      const tokenFromJson = extractTokenFromObject(parsedData as Record<string, unknown>);
-      if (tokenFromJson) {
-        return tokenFromJson;
-      }
-    }
-  } catch {
-    // The QR code may contain a raw token or URL instead of JSON.
-  }
-
-  const queryParamMatch = trimmedData.match(
-    /(?:^|[?&#])(?:api_token|token|pairing_token|pairingToken|serverToken)=([^&#]+)/i
-  );
-  if (queryParamMatch?.[1]) {
-    try {
-      return decodeURIComponent(queryParamMatch[1]).trim();
-    } catch {
-      return queryParamMatch[1].trim();
-    }
-  }
-
-  const keyedValueMatch = trimmedData.match(
-    /(?:api_token|token|pairing_token|pairingToken|serverToken)\s*[:=]\s*["']?([^"'\s,}]+)/i
-  );
-  if (keyedValueMatch?.[1]) {
-    return keyedValueMatch[1].trim();
-  }
-
-  const firstNonEmptyLine = trimmedData
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-
-  if (firstNonEmptyLine && !/\s/.test(firstNonEmptyLine)) {
-    return firstNonEmptyLine;
-  }
-
-  return null;
-};
+import { parsePairingQrConnection } from '../utils/pairingQr';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -312,7 +234,8 @@ export default function SettingsScreen() {
 
       tokenScanLockedRef.current = true;
 
-      const token = extractTokenFromQrData(data);
+      const pairingQr = parsePairingQrConnection(data);
+      const token = pairingQr.token;
       if (!token) {
         Alert.alert(
           'Unsupported QR Code',
@@ -322,11 +245,23 @@ export default function SettingsScreen() {
         return;
       }
 
+      if (!pairingQr.hasValidTlsMetadata) {
+        Alert.alert(
+          'Invalid Secure Pairing Code',
+          'This QR code advertises secure transport but is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.'
+        );
+        tokenScanLockedRef.current = false;
+        return;
+      }
+
       setServerTokenInput(token);
       setScannerVisible(false);
       setScannerError(null);
 
-      let nextServerIp = serverIpInput.trim();
+      let nextServerIp = pairingQr.ip ?? serverIpInput.trim();
+      if (pairingQr.ip) {
+        setServerIpInput(pairingQr.ip);
+      }
 
       if (!isValidIpAddress(nextServerIp)) {
         try {
@@ -346,6 +281,13 @@ export default function SettingsScreen() {
       }
 
       try {
+        if (pairingQr.tlsFingerprint && pairingQr.tlsPort) {
+          await deviceService.setServerConnection(nextServerIp, pairingQr.tlsPort);
+          await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
+        } else if (pairingQr.apiPort) {
+          await deviceService.setServerConnection(nextServerIp, pairingQr.apiPort);
+        }
+
         setTokenScanNotice('Pairing token scanned. Approve the pairing dialog on your computer to finish...');
         const result = await pairAndEnableRemoteControls(nextServerIp, token);
 

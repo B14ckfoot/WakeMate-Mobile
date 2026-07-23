@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios, { isAxiosError } from 'axios';
+import { isAxiosError } from 'axios';
+import * as SecureStore from 'expo-secure-store';
 import dgram from 'react-native-udp';
 import { sendWakeOnLanPacket } from '../native/wakeOnLan';
 import { Device } from '../types/device';
@@ -13,10 +14,19 @@ import {
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
 import { syncDevicesToWidgetStorage } from '../widget/widgetSharedStorage';
+import {
+  normalizeTlsFingerprint,
+  requestCompanion,
+} from './companionTransport';
 
 const SERVER_IP_KEY = 'serverIp';
 const SERVER_PORT_KEY = 'serverPort';
 const SERVER_TOKEN_KEY = 'serverToken';
+const SECURE_SERVER_TOKEN_KEY = 'wakemate.companion.token.v1';
+const SECURE_SERVER_TLS_FINGERPRINT_KEY = 'wakemate.companion.tlsFingerprint.v1';
+const SECURE_SERVER_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
 const DEFAULT_API_PORT = 7777;
 const AUTH_HEADER = 'x-wakemate-token';
 const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
@@ -74,6 +84,15 @@ const DISCOVERY_WAKE_ADDRESS_KEYS = [
 ];
 const DISCOVERY_WAKE_PORT_KEYS = ['wakeport', 'wake_port', 'wakeonlanport', 'wolport', 'wol_port', 'wakeudpport', 'woludpport'];
 const DISCOVERY_API_PORT_KEYS = ['apiport', 'api_port'];
+const DISCOVERY_TLS_PORT_KEYS = ['tlsport', 'tls_port', 'httpsport', 'https_port'];
+const DISCOVERY_TLS_FINGERPRINT_KEYS = [
+  'fp',
+  'fingerprint',
+  'certificatefingerprint',
+  'certificate_fingerprint',
+  'tlsfingerprint',
+  'tls_fingerprint',
+];
 const DISCOVERY_VERSION_KEYS = ['version', 'appversion', 'serverversion'];
 
 type CommandParams = Record<string, any>;
@@ -91,6 +110,8 @@ export type CompanionDiscoveryInfo = {
   wakeAddress: string | null;
   wakePort: number | null;
   apiPort: number;
+  tlsPort: number | null;
+  tlsFingerprint: string | null;
   version: string | null;
   platform: Device['platform'];
 };
@@ -118,7 +139,6 @@ const COMPANION_PAIRING_TIMEOUT_MS = 1200;
 const DEVICE_STATUS_TIMEOUT_MS = 1200;
 const PAIRING_CACHE_TTL_MS = 15000;
 
-const buildBaseUrl = (ip: string, port: number = DEFAULT_API_PORT) => `http://${ip}:${port}`;
 const pairingValidationCache = new Map<string, { expiresAt: number; data: any }>();
 
 const buildWakeAddresses = (device: Pick<Device, 'ip' | 'wakeAddress'>): string[] => {
@@ -388,6 +408,13 @@ const extractDiscoveryDetails = (
   const apiPort =
     findNumberByKeys(preferredSource, DISCOVERY_API_PORT_KEYS) ??
     findNumberByKeys(source, DISCOVERY_API_PORT_KEYS);
+  const tlsPort =
+    findNumberByKeys(preferredSource, DISCOVERY_TLS_PORT_KEYS) ??
+    findNumberByKeys(source, DISCOVERY_TLS_PORT_KEYS);
+  const tlsFingerprint = normalizeTlsFingerprint(
+    findValueByKeys(preferredSource, DISCOVERY_TLS_FINGERPRINT_KEYS) ??
+      findValueByKeys(source, DISCOVERY_TLS_FINGERPRINT_KEYS)
+  );
   const version =
     findValueByKeys(preferredSource, DISCOVERY_VERSION_KEYS) ??
     findValueByKeys(payload, DISCOVERY_VERSION_KEYS);
@@ -403,6 +430,8 @@ const extractDiscoveryDetails = (
     wakeAddress: wakeAddress && isValidIpAddress(wakeAddress) ? wakeAddress : null,
     wakePort,
     apiPort,
+    tlsPort,
+    tlsFingerprint,
     version,
     platform,
   };
@@ -424,6 +453,10 @@ const parseDiscoveryResponse = (payload: unknown): CompanionDiscoveryInfo | null
     wakeAddress: details.wakeAddress,
     wakePort: details.wakePort ?? null,
     apiPort: normalizeDiscoveredPort(details.apiPort, DEFAULT_API_PORT),
+    tlsPort: details.tlsPort
+      ? normalizeDiscoveredPort(details.tlsPort, DEFAULT_API_PORT + 1)
+      : null,
+    tlsFingerprint: details.tlsFingerprint,
     version: details.version,
     platform: details.platform,
   };
@@ -447,6 +480,10 @@ const parseHealthDiscoveryResponse = (payload: unknown, serverIp: string): Compa
     wakeAddress: details?.wakeAddress ?? null,
     wakePort: details?.wakePort ?? null,
     apiPort: normalizeDiscoveredPort(details?.apiPort, DEFAULT_API_PORT),
+    tlsPort: details?.tlsPort
+      ? normalizeDiscoveredPort(details.tlsPort, DEFAULT_API_PORT + 1)
+      : null,
+    tlsFingerprint: details?.tlsFingerprint ?? null,
     version: details?.version ?? null,
     platform: details?.platform ?? inferDevicePlatformFromMetadata(payload, deviceName),
   };
@@ -476,6 +513,8 @@ const mergeCompanionDiscoveries = (discoveries: CompanionDiscoveryInfo[]): Compa
       wakeAddress: existing.wakeAddress ?? discovery.wakeAddress,
       wakePort: existing.wakePort ?? discovery.wakePort,
       apiPort: existing.apiPort || discovery.apiPort,
+      tlsPort: existing.tlsPort ?? discovery.tlsPort,
+      tlsFingerprint: existing.tlsFingerprint ?? discovery.tlsFingerprint,
       version: existing.version ?? discovery.version,
       platform: existing.platform === 'unknown' ? discovery.platform : existing.platform,
     });
@@ -607,6 +646,92 @@ const persistNumberSetting = async (key: string, value: number | null | undefine
   await AsyncStorage.setItem(key, String(value));
 };
 
+const removeLegacyServerToken = async (): Promise<void> => {
+  try {
+    await AsyncStorage.removeItem(SERVER_TOKEN_KEY);
+  } catch (error) {
+    // The secure value is still usable. Retry this cleanup on the next read so
+    // a transient storage failure cannot leave the plaintext copy indefinitely.
+    console.error('Error removing legacy plaintext pairing token:', error);
+  }
+};
+
+const readOrMigrateServerToken = async (): Promise<string | null> => {
+  if (!(await SecureStore.isAvailableAsync())) {
+    throw new Error('Secure credential storage is unavailable on this device.');
+  }
+
+  const secureToken = normalizeStoredValue(
+    await SecureStore.getItemAsync(SECURE_SERVER_TOKEN_KEY, SECURE_SERVER_TOKEN_OPTIONS)
+  );
+  if (secureToken) {
+    await removeLegacyServerToken();
+    return secureToken;
+  }
+
+  const legacyToken = normalizeStoredValue(await AsyncStorage.getItem(SERVER_TOKEN_KEY));
+  if (!legacyToken) {
+    await removeLegacyServerToken();
+    return null;
+  }
+
+  // Write first, delete second. A crash between these operations leaves a
+  // recoverable plaintext copy that the next read will migrate again.
+  await SecureStore.setItemAsync(
+    SECURE_SERVER_TOKEN_KEY,
+    legacyToken,
+    SECURE_SERVER_TOKEN_OPTIONS
+  );
+  await removeLegacyServerToken();
+  return legacyToken;
+};
+
+const readStoredTlsFingerprint = async (): Promise<string | null> => {
+  if (!(await SecureStore.isAvailableAsync())) {
+    return null;
+  }
+
+  const storedValue = await SecureStore.getItemAsync(
+    SECURE_SERVER_TLS_FINGERPRINT_KEY,
+    SECURE_SERVER_TOKEN_OPTIONS
+  );
+  const fingerprint = normalizeTlsFingerprint(storedValue);
+  if (storedValue && !fingerprint) {
+    await SecureStore.deleteItemAsync(
+      SECURE_SERVER_TLS_FINGERPRINT_KEY,
+      SECURE_SERVER_TOKEN_OPTIONS
+    );
+  }
+  return fingerprint;
+};
+
+const persistTlsFingerprint = async (
+  fingerprint: string | null | undefined
+): Promise<void> => {
+  if (!(await SecureStore.isAvailableAsync())) {
+    throw new Error('Secure credential storage is unavailable on this device.');
+  }
+
+  const trimmedValue = fingerprint?.trim() ?? '';
+  if (!trimmedValue) {
+    await SecureStore.deleteItemAsync(
+      SECURE_SERVER_TLS_FINGERPRINT_KEY,
+      SECURE_SERVER_TOKEN_OPTIONS
+    );
+    return;
+  }
+
+  const normalized = normalizeTlsFingerprint(trimmedValue);
+  if (!normalized) {
+    throw new Error('The pairing QR code contained an invalid TLS fingerprint.');
+  }
+  await SecureStore.setItemAsync(
+    SECURE_SERVER_TLS_FINGERPRINT_KEY,
+    normalized,
+    SECURE_SERVER_TOKEN_OPTIONS
+  );
+};
+
 const chunkArray = <T,>(items: T[], size: number): T[][] => {
   const chunks: T[][] = [];
 
@@ -642,8 +767,12 @@ const getStoredServerPort = async (): Promise<number | null> => {
 const resolveTargetEndpoint = async (
   explicitIp?: string | null,
   explicitPort?: number | null
-): Promise<{ ip: string; port: number }> => {
-  const storedIp = normalizeStoredValue(await AsyncStorage.getItem(SERVER_IP_KEY));
+): Promise<{ ip: string; port: number; tlsFingerprint: string | null }> => {
+  const [storedIpValue, storedTlsFingerprint] = await Promise.all([
+    AsyncStorage.getItem(SERVER_IP_KEY),
+    readStoredTlsFingerprint(),
+  ]);
+  const storedIp = normalizeStoredValue(storedIpValue);
   const targetIp = normalizeStoredValue(explicitIp) ?? storedIp;
 
   if (!targetIp) {
@@ -654,6 +783,8 @@ const resolveTargetEndpoint = async (
     return {
       ip: targetIp,
       port: normalizeDiscoveredPort(explicitPort, DEFAULT_API_PORT),
+      tlsFingerprint:
+        storedIp && storedIp === targetIp ? storedTlsFingerprint : null,
     };
   }
 
@@ -664,13 +795,18 @@ const resolveTargetEndpoint = async (
       storedIp && storedIp === targetIp ? storedPort : null,
       DEFAULT_API_PORT
     ),
+    tlsFingerprint:
+      storedIp && storedIp === targetIp ? storedTlsFingerprint : null,
   };
 };
 
 const fetchCompanionHealthDiscovery = async (ip: string, port: number = DEFAULT_API_PORT): Promise<CompanionDiscoveryInfo | null> => {
   try {
-    const response = await axios.get(`${buildBaseUrl(ip, port)}/v1/health`, {
-      timeout: DISCOVERY_TIMEOUT_MS,
+    const response = await requestCompanion<any>({
+      ip,
+      port,
+      path: '/v1/health',
+      timeoutMs: DISCOVERY_TIMEOUT_MS,
       headers: {
         'Cache-Control': 'no-cache',
       },
@@ -953,19 +1089,46 @@ const deviceService = {
         : normalizeDiscoveredPort(currentIp === trimmedIp ? currentPort : null, DEFAULT_API_PORT);
 
     try {
-      await Promise.all([
+      const updates: Promise<void>[] = [
         persistStringSetting(SERVER_IP_KEY, trimmedIp),
         persistNumberSetting(SERVER_PORT_KEY, resolvedPort),
-      ]);
+      ];
+      if (currentIp !== trimmedIp) {
+        const currentFingerprint = await readStoredTlsFingerprint();
+        if (currentFingerprint) {
+          updates.push(persistTlsFingerprint(null));
+        }
+      }
+      await Promise.all(updates);
     } catch (error) {
       console.error('Error setting companion connection:', error);
       throw error;
     }
   },
 
+  async getServerTlsFingerprint(): Promise<string | null> {
+    try {
+      return await readStoredTlsFingerprint();
+    } catch (error) {
+      console.error('Error getting companion TLS fingerprint:', error);
+      return null;
+    }
+  },
+
+  async setServerTlsFingerprint(
+    fingerprint: string | null | undefined
+  ): Promise<void> {
+    try {
+      await persistTlsFingerprint(fingerprint);
+    } catch (error) {
+      console.error('Error setting companion TLS fingerprint:', error);
+      throw error;
+    }
+  },
+
   async getServerToken(): Promise<string | null> {
     try {
-      return await AsyncStorage.getItem(SERVER_TOKEN_KEY);
+      return await readOrMigrateServerToken();
     } catch (error) {
       console.error('Error getting pairing token:', error);
       return null;
@@ -974,7 +1137,25 @@ const deviceService = {
 
   async setServerToken(token: string): Promise<void> {
     try {
-      await persistStringSetting(SERVER_TOKEN_KEY, token);
+      if (!(await SecureStore.isAvailableAsync())) {
+        throw new Error('Secure credential storage is unavailable on this device.');
+      }
+
+      const trimmedToken = token.trim();
+      if (!trimmedToken) {
+        await Promise.all([
+          SecureStore.deleteItemAsync(SECURE_SERVER_TOKEN_KEY, SECURE_SERVER_TOKEN_OPTIONS),
+          AsyncStorage.removeItem(SERVER_TOKEN_KEY),
+        ]);
+        return;
+      }
+
+      await SecureStore.setItemAsync(
+        SECURE_SERVER_TOKEN_KEY,
+        trimmedToken,
+        SECURE_SERVER_TOKEN_OPTIONS
+      );
+      await AsyncStorage.removeItem(SERVER_TOKEN_KEY);
     } catch (error) {
       console.error('Error setting pairing token:', error);
       throw error;
@@ -1021,9 +1202,17 @@ const deviceService = {
   },
 
   async getCompanionHealth(serverIp?: string): Promise<any> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
-    const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/health`, {
-      timeout: COMPANION_HEALTH_TIMEOUT_MS,
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
+    const response = await requestCompanion<any>({
+      ip: targetIp,
+      port: targetPort,
+      path: '/v1/health',
+      timeoutMs: COMPANION_HEALTH_TIMEOUT_MS,
+      tlsFingerprint,
       headers: {
         'Cache-Control': 'no-cache',
       },
@@ -1033,11 +1222,19 @@ const deviceService = {
   },
 
   async getCompanionInfo(serverIp?: string): Promise<any> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
     const token = normalizeStoredValue(await this.getServerToken());
     try {
-      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/info`, {
-        timeout: COMPANION_HEALTH_TIMEOUT_MS,
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/info',
+        timeoutMs: COMPANION_HEALTH_TIMEOUT_MS,
+        tlsFingerprint,
         headers: {
           'Cache-Control': 'no-cache',
           ...(token ? { [AUTH_HEADER]: token } : {}),
@@ -1079,9 +1276,13 @@ const deviceService = {
   },
 
   async checkPairing(serverIp?: string): Promise<any> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
-    const cacheKey = `${targetIp}:${targetPort}:${token}`;
+    const cacheKey = `${targetIp}:${targetPort}:${tlsFingerprint ?? 'http'}:${token}`;
     const cachedResult = pairingValidationCache.get(cacheKey);
 
     if (cachedResult && cachedResult.expiresAt > Date.now()) {
@@ -1089,8 +1290,12 @@ const deviceService = {
     }
 
     try {
-      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/pairing/check`, {
-        timeout: COMPANION_PAIRING_TIMEOUT_MS,
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/pairing/check',
+        timeoutMs: COMPANION_PAIRING_TIMEOUT_MS,
+        tlsFingerprint,
         headers: buildAuthHeaders(token),
       });
 
@@ -1110,12 +1315,20 @@ const deviceService = {
     allowInputCommands: boolean;
     allowPowerCommands: boolean;
   } | null> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
 
     try {
-      const response = await axios.get(`${buildBaseUrl(targetIp, targetPort)}/v1/pairing/status`, {
-        timeout: COMPANION_PAIRING_TIMEOUT_MS,
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/pairing/status',
+        timeoutMs: COMPANION_PAIRING_TIMEOUT_MS,
+        tlsFingerprint,
         headers: buildAuthHeaders(token),
       });
 
@@ -1171,17 +1384,23 @@ const deviceService = {
   },
 
   async activatePairedControls(serverIp?: string, tokenOverride?: string | null): Promise<any> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
     const token = normalizeStoredValue(tokenOverride) ?? await requireServerToken();
     try {
-      const response = await axios.post(
-        `${buildBaseUrl(targetIp, targetPort)}/v1/pairing/activate`,
-        {},
-        {
-          timeout: 5000,
-          headers: buildAuthHeaders(token),
-        }
-      );
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/pairing/activate',
+        method: 'POST',
+        data: {},
+        timeoutMs: 5000,
+        tlsFingerprint,
+        headers: buildAuthHeaders(token),
+      });
 
       return response.data;
     } catch (error) {
@@ -1191,9 +1410,13 @@ const deviceService = {
 
   async checkDeviceStatus(deviceIp: string): Promise<boolean> {
     try {
-      const { port: targetPort } = await resolveTargetEndpoint(deviceIp);
-      const response = await axios.get(`${buildBaseUrl(deviceIp, targetPort)}/v1/health`, {
-        timeout: DEVICE_STATUS_TIMEOUT_MS,
+      const { port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(deviceIp);
+      const response = await requestCompanion<any>({
+        ip: deviceIp,
+        port: targetPort,
+        path: '/v1/health',
+        timeoutMs: DEVICE_STATUS_TIMEOUT_MS,
+        tlsFingerprint,
         headers: {
           'Cache-Control': 'no-cache',
         },
@@ -1207,21 +1430,27 @@ const deviceService = {
   },
 
   async sendWakeRequest(mac: string, serverIp?: string, options: WakeRequestOptions = {}): Promise<any> {
-    const { ip: targetIp, port: targetPort } = await resolveTargetEndpoint(serverIp);
+    const {
+      ip: targetIp,
+      port: targetPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(serverIp);
     const token = await requireServerToken();
     try {
-      const response = await axios.post(
-        `${buildBaseUrl(targetIp, targetPort)}/v1/wake`,
-        {
+      const response = await requestCompanion<any>({
+        ip: targetIp,
+        port: targetPort,
+        path: '/v1/wake',
+        method: 'POST',
+        data: {
           mac,
           broadcast: options.wakeAddress?.trim() || undefined,
           port: sanitizeWakePort(options.wakePort),
         },
-        {
-          headers: buildAuthHeaders(token),
-          timeout: 5000,
-        }
-      );
+        headers: buildAuthHeaders(token),
+        timeoutMs: 5000,
+        tlsFingerprint,
+      });
 
       return response.data;
     } catch (error) {
@@ -1230,7 +1459,11 @@ const deviceService = {
   },
 
   async sendCommandTo(targetIp: string | null | undefined, command: string, params: CommandParams = {}): Promise<any> {
-    const { ip: serverIp, port: serverPort } = await resolveTargetEndpoint(targetIp);
+    const {
+      ip: serverIp,
+      port: serverPort,
+      tlsFingerprint,
+    } = await resolveTargetEndpoint(targetIp);
 
     if (command === 'get_status') {
       return this.getCompanionInfo(serverIp);
@@ -1247,9 +1480,15 @@ const deviceService = {
 
     try {
       const payload = mapLegacyCommand(command, params);
-      const response = await axios.post(`${buildBaseUrl(serverIp, serverPort)}/v1/command`, payload, {
+      const response = await requestCompanion<any>({
+        ip: serverIp,
+        port: serverPort,
+        path: '/v1/command',
+        method: 'POST',
+        data: payload,
         headers: buildAuthHeaders(token),
-        timeout: 5000,
+        timeoutMs: 5000,
+        tlsFingerprint,
       });
 
       return response.data;

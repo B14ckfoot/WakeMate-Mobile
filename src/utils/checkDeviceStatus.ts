@@ -1,11 +1,17 @@
-export async function checkDeviceStatus(ip: string, port: number = 7777): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
+import { requestCompanion } from '../services/companionTransport';
 
-    const response = await fetch(`http://${ip}:${port}/v1/health`, {
-      method: 'GET',
-      signal: controller.signal,
+export async function checkDeviceStatus(
+  ip: string,
+  port: number = 7777,
+  tlsFingerprint?: string | null
+): Promise<boolean> {
+  try {
+    const response = await requestCompanion<any>({
+      ip,
+      port,
+      path: '/v1/health',
+      timeoutMs: 3000,
+      tlsFingerprint,
       headers: {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         Pragma: 'no-cache',
@@ -13,15 +19,7 @@ export async function checkDeviceStatus(ip: string, port: number = 7777): Promis
       },
     });
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      console.log(`Device at ${ip}:${port} returned status ${response.status}`);
-      return false;
-    }
-
-    const data = await response.json();
-    return data?.ok === true && data?.data?.status === 'online';
+    return response.data?.ok === true && response.data?.data?.status === 'online';
   } catch (error) {
     console.log(`Error checking device status for ${ip}:${port}`, error);
     return false;

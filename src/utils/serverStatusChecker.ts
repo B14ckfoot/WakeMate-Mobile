@@ -1,47 +1,32 @@
+import { requestCompanion } from '../services/companionTransport';
+
 const AUTH_HEADER = 'x-wakemate-token';
 const LOCAL_CONNECTION_TIMEOUT_MS = 1500;
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = LOCAL_CONNECTION_TIMEOUT_MS): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-export async function pingServer(ip: string, port: number = 7777): Promise<{
+export async function pingServer(
+  ip: string,
+  port: number = 7777,
+  tlsFingerprint?: string | null
+): Promise<{
   success: boolean;
   message: string;
   responseTime?: number;
 }> {
   try {
     const startTime = performance.now();
-    const response = await fetchWithTimeout(`http://${ip}:${port}/v1/health`, {
-      method: 'GET',
+    const response = await requestCompanion<any>({
+      ip,
+      port,
+      path: '/v1/health',
+      timeoutMs: LOCAL_CONNECTION_TIMEOUT_MS,
+      tlsFingerprint,
       headers: {
         'Cache-Control': 'no-cache',
       },
     });
+    const responseTime = Math.round(performance.now() - startTime);
 
-    const endTime = performance.now();
-    const responseTime = Math.round(endTime - startTime);
-
-    if (!response.ok) {
-      return {
-        success: false,
-        message: `Companion responded with status ${response.status}`,
-        responseTime,
-      };
-    }
-
-    const data = await response.json();
-    if (data?.ok === true && data?.data?.status === 'online') {
+    if (response.data?.ok === true && response.data?.data?.status === 'online') {
       return {
         success: true,
         message: `Connected successfully (${responseTime}ms)`,
@@ -55,30 +40,17 @@ export async function pingServer(ip: string, port: number = 7777): Promise<{
       responseTime,
     };
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        return {
-          success: false,
-          message: 'Connection timed out after 1.5 seconds',
-        };
-      }
-
-      if (error.message.includes('Failed to fetch')) {
-        return {
-          success: false,
-          message: 'Failed to connect to companion. Make sure the WakeMATE companion is running.',
-        };
-      }
-
+    const message = error instanceof Error ? error.message : 'Unknown connection error';
+    if (/timeout|timed out|aborted/i.test(message)) {
       return {
         success: false,
-        message: `Connection error: ${error.message}`,
+        message: 'Connection timed out after 1.5 seconds',
       };
     }
 
     return {
       success: false,
-      message: 'Unknown connection error',
+      message: `Connection error: ${message}`,
     };
   }
 }
@@ -86,7 +58,8 @@ export async function pingServer(ip: string, port: number = 7777): Promise<{
 export async function testCommandEndpoint(
   ip: string,
   token?: string,
-  port: number = 7777
+  port: number = 7777,
+  tlsFingerprint?: string | null
 ): Promise<{
   success: boolean;
   message: string;
@@ -100,51 +73,50 @@ export async function testCommandEndpoint(
   }
 
   try {
-    const response = await fetchWithTimeout(`http://${ip}:${port}/v1/pairing/check`, {
-      method: 'GET',
+    const response = await requestCompanion<any>({
+      ip,
+      port,
+      path: '/v1/pairing/check',
+      timeoutMs: LOCAL_CONNECTION_TIMEOUT_MS,
+      tlsFingerprint,
       headers: {
         [AUTH_HEADER]: token.trim(),
       },
     });
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        success: true,
-        message: 'Pairing token accepted',
-        responseData: data,
-      };
-    }
-
-    if (response.status === 401 || response.status === 403) {
+    return {
+      success: true,
+      message: 'Pairing token accepted',
+      responseData: response.data,
+    };
+  } catch (error) {
+    const status =
+      error &&
+      typeof error === 'object' &&
+      'response' in error &&
+      error.response &&
+      typeof error.response === 'object' &&
+      'status' in error.response
+        ? error.response.status
+        : null;
+    if (status === 401 || status === 403) {
       return {
         success: false,
         message: 'Pairing token was rejected by the companion.',
       };
     }
 
-    return {
-      success: false,
-      message: `Pairing check responded with status ${response.status}`,
-    };
-  } catch (error) {
-    if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        return {
-          success: false,
-          message: 'Pairing check timed out after 1.5 seconds',
-        };
-      }
-
+    const message = error instanceof Error ? error.message : 'Unknown pairing check error';
+    if (/timeout|timed out|aborted/i.test(message)) {
       return {
         success: false,
-        message: `Pairing check error: ${error.message}`,
+        message: 'Pairing check timed out after 1.5 seconds',
       };
     }
 
     return {
       success: false,
-      message: 'Unknown pairing check error',
+      message: `Pairing check error: ${message}`,
     };
   }
 }
@@ -152,7 +124,8 @@ export async function testCommandEndpoint(
 export async function runDiagnostics(
   ip: string,
   token?: string,
-  port: number = 7777
+  port: number = 7777,
+  tlsFingerprint?: string | null
 ): Promise<{
   overall: boolean;
   steps: {
@@ -172,7 +145,7 @@ export async function runDiagnostics(
     }[],
   };
 
-  const pingResult = await pingServer(ip, port);
+  const pingResult = await pingServer(ip, port, tlsFingerprint);
   results.steps.push({
     name: 'Companion Health',
     success: pingResult.success,
@@ -180,7 +153,12 @@ export async function runDiagnostics(
     data: pingResult,
   });
 
-  const pairingResult = await testCommandEndpoint(ip, token, port);
+  const pairingResult = await testCommandEndpoint(
+    ip,
+    token,
+    port,
+    tlsFingerprint
+  );
   results.steps.push({
     name: 'Pairing Token',
     success: pairingResult.success,

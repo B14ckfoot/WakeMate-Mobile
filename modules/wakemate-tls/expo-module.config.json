@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["WakemateTlsModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.wakematetls.WakemateTlsModule"]
+  }
+}

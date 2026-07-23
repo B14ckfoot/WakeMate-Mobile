@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import deviceService from '../services/deviceService';
 import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
+import { parsePairingQrConnection } from '../../src/utils/pairingQr';
 
 export default function ScanDeviceQrScreen() {
   const router = useRouter();
@@ -40,27 +41,32 @@ export default function ScanDeviceQrScreen() {
         return;
       }
 
-      // Pairing QR v2 also carries the pairing token and API port, so one
-      // scan can save the device AND pair with the companion.
-      const parsedRecord =
-        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null;
-      const pairingToken =
-        typeof parsedRecord?.token === 'string' && parsedRecord.token.trim()
-          ? parsedRecord.token.trim()
-          : null;
-      const rawApiPort = parsedRecord?.api_port;
-      const apiPort =
-        typeof rawApiPort === 'number' && Number.isInteger(rawApiPort) && rawApiPort > 0 && rawApiPort <= 65535
-          ? rawApiPort
-          : null;
+      // Pairing QR v2 carries the token and transport metadata, so one scan
+      // can save the device and establish a pinned HTTPS connection.
+      const pairingQr = parsePairingQrConnection(data);
+      const pairingToken = pairingQr.token;
+      if (!pairingQr.hasValidTlsMetadata) {
+        Alert.alert(
+          'Invalid Secure Pairing Code',
+          'This QR code advertises secure transport but is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.',
+          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
+        );
+        return;
+      }
+      const connectionPort =
+        pairingQr.tlsFingerprint && pairingQr.tlsPort
+          ? pairingQr.tlsPort
+          : pairingQr.apiPort;
 
       const fields = extractCompanionFields(parsed, '');
       const scannedDevice = buildScannedDevice(fields);
 
       if (!scannedDevice) {
         if (pairingToken) {
+          if (pairingQr.ip) {
+            await deviceService.setServerConnection(pairingQr.ip, connectionPort);
+            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
+          }
           await deviceService.setServerToken(pairingToken);
           Alert.alert(
             'Pairing Token Saved',
@@ -99,7 +105,8 @@ export default function ScanDeviceQrScreen() {
         let pairingSummary = '';
         if (pairingToken) {
           try {
-            await deviceService.setServerConnection(savedDevice.ip, apiPort);
+            await deviceService.setServerConnection(savedDevice.ip, connectionPort);
+            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
             await deviceService.setServerToken(pairingToken);
             await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
             const approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
