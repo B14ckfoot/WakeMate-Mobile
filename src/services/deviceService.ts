@@ -828,17 +828,36 @@ const wait = async (durationMs: number): Promise<void> =>
     setTimeout(resolve, durationMs);
   });
 
+// The companion usually is one of the saved devices, so probing their IPs
+// directly finds it even when UDP broadcast is unavailable (iOS blocks it
+// without the multicast entitlement) and without waiting for a subnet sweep.
+const probeSavedDevicesForCompanions = async (): Promise<CompanionDiscoveryInfo[]> => {
+  try {
+    const devices = await deviceService.getDevices();
+    const uniqueIps = Array.from(
+      new Set(devices.map((device) => device.ip.trim()).filter((ip) => isValidIpAddress(ip)))
+    );
+    const results = await Promise.all(uniqueIps.map((ip) => fetchCompanionHealthDiscovery(ip)));
+    return results.filter((discovery): discovery is CompanionDiscoveryInfo => Boolean(discovery));
+  } catch (error) {
+    console.error('Error probing saved devices for companions:', error);
+    return [];
+  }
+};
+
 const discoverCompanionsOnce = async (
   storedIp: string | null,
   storedPort: number | null
 ): Promise<CompanionDiscoveryInfo[]> => {
-  const [udpDiscoveries, storedDiscovery] = await Promise.all([
+  const [udpDiscoveries, storedDiscovery, savedDeviceDiscoveries] = await Promise.all([
     discoverCompanionsViaUdp(),
     storedIp ? fetchCompanionHealthDiscovery(storedIp, normalizeDiscoveredPort(storedPort, DEFAULT_API_PORT)) : Promise.resolve(null),
+    probeSavedDevicesForCompanions(),
   ]);
   const directDiscoveries = mergeCompanionDiscoveries([
     ...udpDiscoveries,
     ...(storedDiscovery ? [storedDiscovery] : []),
+    ...savedDeviceDiscoveries,
   ]);
 
   if (directDiscoveries.length > 0) {

@@ -69,6 +69,7 @@ export default function SettingsScreen() {
     isConnected,
     connectionError,
     testConnection,
+    refreshFromStorage,
   } = useServer();
 
   const loadData = useCallback(async () => {
@@ -92,7 +93,8 @@ export default function SettingsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
-    }, [loadData])
+      refreshFromStorage();
+    }, [loadData, refreshFromStorage])
   );
 
   const persistConnectionSettings = useCallback(async (nextServerIp: string, nextServerToken: string) => {

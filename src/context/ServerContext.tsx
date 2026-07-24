@@ -13,6 +13,7 @@ interface ServerContextType {
   connectionError: string | null;
   testConnection: (nextIp?: string, nextToken?: string) => Promise<boolean>;
   runServerDiagnostics: () => Promise<any>;
+  refreshFromStorage: () => Promise<void>;
   lastStatus: 'success' | 'error' | 'pending' | null;
 }
 
@@ -53,6 +54,23 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
     };
 
     loadConnectionSettings();
+  }, []);
+
+  // The QR pairing flows write the companion IP/token straight to storage
+  // (outside this provider), so screens call this to pick those values up
+  // without requiring an app restart.
+  const refreshFromStorage = useCallback(async () => {
+    try {
+      const [savedIp, savedToken] = await Promise.all([
+        deviceService.getServerAddress(),
+        deviceService.getServerToken(),
+      ]);
+
+      setServerIp(savedIp?.trim() ?? '');
+      setServerToken(savedToken?.trim() ?? '');
+    } catch (error) {
+      console.error('Error refreshing companion settings:', error);
+    }
   }, []);
 
   const resolveConnectionEndpoint = useCallback(async (nextIp: string): Promise<{
@@ -230,6 +248,7 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
         connectionError,
         testConnection,
         runServerDiagnostics,
+        refreshFromStorage,
         lastStatus,
       }}
     >

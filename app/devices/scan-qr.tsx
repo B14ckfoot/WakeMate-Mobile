@@ -64,14 +64,31 @@ export default function ScanDeviceQrScreen() {
 
       if (!scannedDevice) {
         if (pairingToken) {
-          if (pairingQr.ip) {
-            await deviceService.setServerConnection(pairingQr.ip, connectionPort);
+          // The QR code may omit the companion IP (e.g. the desktop could
+          // not detect its own address); fall back to network discovery so
+          // the user is not sent to Settings to type it by hand.
+          let serverIp = pairingQr.ip;
+          if (!serverIp) {
+            setIsProcessing(true);
+            try {
+              serverIp = await deviceService.discoverCompanionServer();
+            } catch (error) {
+              console.error('Error discovering companion during QR pairing:', error);
+            } finally {
+              setIsProcessing(false);
+            }
+          }
+
+          if (serverIp) {
+            await deviceService.setServerConnection(serverIp, connectionPort);
             await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
           }
           await deviceService.setServerToken(pairingToken);
           Alert.alert(
             'Pairing Token Saved',
-            'This QR code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
+            serverIp
+              ? `The companion was found at ${serverIp}. Open Settings and tap "Save and Test" to finish pairing.`
+              : 'This QR code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
             [{ text: 'OK', onPress: () => router.back() }]
           );
           return;
