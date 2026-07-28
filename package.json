@@ -10,10 +10,14 @@
     "web": "npx expo start --web",
     "postinstall": "patch-package",
     "test": "jest --watchAll",
+    "test:ci": "jest --ci",
     "lint": "npx expo lint"
   },
   "jest": {
-    "preset": "jest-expo"
+    "preset": "jest-expo",
+    "setupFilesAfterEnv": [
+      "<rootDir>/jest.setup.js"
+    ]
   },
   "dependencies": {
     "@bacons/apple-targets": "^4.0.6",

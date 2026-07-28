@@ -36,6 +36,7 @@ import {
   Power,
   RefreshCw,
   Settings,
+  ShieldAlert,
   SkipBack,
   SkipForward,
   VolumeX,
@@ -52,7 +53,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VolumeManager } from 'react-native-volume-manager';
 import { Device, DevicePlatform } from '../../../src/types/device';
-import deviceService from '../../../src/services/deviceService';
+import deviceService, { SecurityScreenOutcome } from '../../../src/services/deviceService';
 import {
   getPrimaryShortcutModifier,
   inferDevicePlatformFromMetadata,
@@ -214,8 +215,14 @@ const getProductivityShortcuts = (platform: DevicePlatform): QuickKey[] =>
         { label: 'Ctrl+Z', keyValue: 'ctrl+z' },
         { label: 'Alt+Tab', keyValue: 'alt+tab' },
         { label: 'Win+D', keyValue: 'win+d' },
-        { label: 'Ctrl+Alt+Delete', keyValue: 'ctrl+alt+delete', wide: true },
       ];
+
+// Ctrl+Alt+Delete used to sit in the combo list above. It cannot work from
+// there: Windows reserves the Secure Attention Sequence for winlogon and
+// filters it out of synthetic keystrokes, so the combo silently did nothing
+// while the app reported success. It now has its own control, which asks the
+// companion to raise the real security screen and reports what Windows
+// actually allowed. See `renderSecurityControl` below.
 
 export default function DeviceControlScreen() {
   const params = useLocalSearchParams();
@@ -230,6 +237,7 @@ export default function DeviceControlScreen() {
   const [isSettingsVisible, setIsSettingsVisible] = useState(false);
   const [keyboardText, setKeyboardText] = useState('');
   const [isSendingKeyboard, setIsSendingKeyboard] = useState(false);
+  const [isSendingSecurityScreen, setIsSendingSecurityScreen] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [keyboardAccessoryMode, setKeyboardAccessoryMode] = useState<KeyboardAccessoryMode>(null);
   const [controlSettings, setControlSettings] = useState<ControlSettings>(DEFAULT_CONTROL_SETTINGS);
@@ -242,6 +250,7 @@ export default function DeviceControlScreen() {
   const [scrollThumbOffset, setScrollThumbOffset] = useState(0);
 
   const keyboardInputRef = useRef<TextInput>(null);
+  const securityCommandInFlightRef = useRef(false);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTouchpadCommandErrorRef = useRef<string | null>(null);
   const lastTouchpadTranslationRef = useRef({ x: 0, y: 0 });
@@ -1121,6 +1130,137 @@ export default function DeviceControlScreen() {
     );
   }, [confirmPowerCommand, device, runCommand, status]);
 
+  // Turns the companion's structured outcome into something a person can act
+  // on. Deliberately keyed off `status`/`action` rather than the companion's
+  // free text, so a stray or hostile `detail` can never masquerade as the
+  // headline result; `detail` is only ever offered as secondary context.
+  const describeSecurityOutcome = useCallback((outcome: SecurityScreenOutcome): {
+    title: string;
+    message: string;
+    tone: FeedbackTone;
+    alert: boolean;
+  } => {
+    switch (outcome.status) {
+      case 'success':
+        return outcome.action === 'lock'
+          ? {
+              title: 'Computer locked',
+              message: 'Windows Security is restricted on this PC, so the computer was locked instead.',
+              tone: 'success',
+              alert: false,
+            }
+          : {
+              title: 'Windows Security opened',
+              message: 'Windows Security opened.',
+              tone: 'success',
+              alert: false,
+            };
+      case 'permission_required':
+        return {
+          title: 'Windows Security needs permission',
+          message: 'This action requires elevated companion permissions.',
+          tone: 'warning',
+          alert: true,
+        };
+      case 'unsupported':
+        return {
+          title: 'Not supported',
+          message: 'The connected computer does not support this command.',
+          tone: 'warning',
+          alert: true,
+        };
+      case 'unauthorized':
+        return {
+          title: 'Pairing required',
+          message: 'This phone is not paired with the computer. Re-scan the pairing QR code in Settings.',
+          tone: 'warning',
+          alert: true,
+        };
+      case 'offline':
+        return {
+          title: 'Computer offline',
+          message: 'The computer is offline.',
+          tone: 'warning',
+          alert: true,
+        };
+      case 'timeout':
+        return {
+          title: 'No response',
+          message: 'The command timed out. Confirm that WakeMate Companion is running.',
+          tone: 'warning',
+          alert: true,
+        };
+      default:
+        return {
+          title: 'Windows Security failed',
+          message: 'The computer could not open Windows Security.',
+          tone: 'warning',
+          alert: true,
+        };
+    }
+  }, []);
+
+  const runSecurityScreenCommand = useCallback(async () => {
+    if (!device) {
+      return;
+    }
+
+    // The in-flight ref, not the state flag: a second tap can land before
+    // React has re-rendered the disabled button.
+    if (securityCommandInFlightRef.current) {
+      return;
+    }
+
+    securityCommandInFlightRef.current = true;
+    setIsSendingSecurityScreen(true);
+    showFeedback('Sending security command...', 'info');
+
+    try {
+      const outcome = await deviceService.sendSecurityScreen(device.id, device.ip, {
+        fallback: 'lock',
+      });
+      const description = describeSecurityOutcome(outcome);
+
+      triggerHaptic(outcome.status === 'success' ? 'success' : 'error');
+      showFeedback(description.message, description.tone);
+
+      if (description.alert) {
+        Alert.alert(
+          description.title,
+          outcome.detail ? `${description.message}\n\n${outcome.detail}` : description.message
+        );
+      }
+    } finally {
+      securityCommandInFlightRef.current = false;
+      setIsSendingSecurityScreen(false);
+    }
+  }, [describeSecurityOutcome, device, showFeedback, triggerHaptic]);
+
+  const handleSecurityScreen = useCallback(() => {
+    if (!device || status !== 'online' || securityCommandInFlightRef.current) {
+      return;
+    }
+
+    triggerHaptic('selection');
+
+    // The confirmation names both possible outcomes, because which one happens
+    // is decided by Windows on the PC and cannot be known before asking.
+    Alert.alert(
+      'Windows Security',
+      'WakeMate will ask this computer to open the Ctrl+Alt+Delete security screen.\n\nWindows only allows that from an elevated companion. If it is not permitted, the computer will be locked instead.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: () => {
+            void runSecurityScreenCommand();
+          },
+        },
+      ]
+    );
+  }, [device, runSecurityScreenCommand, status, triggerHaptic]);
+
   const renderKeyboardPanel = () => (
     <View style={styles.keyboardMiniDock}>
       <View style={styles.keyboardComposer}>
@@ -1413,6 +1553,42 @@ export default function DeviceControlScreen() {
                 ))}
               </View>
             </View>
+
+            {/* Same "anything that is not a Mac" rule the shortcut lists use,
+                so an undetected PC still gets the control. A companion that
+                turns out not to be Windows answers `unsupported`, which the
+                UI reports honestly rather than guessing here. */}
+            {devicePlatform !== 'mac' ? (
+              <View style={[styles.keySection, styles.keySurfaceCard]}>
+                <View style={styles.keySectionHeader}>
+                  <Text style={styles.keySectionTitle}>Security</Text>
+                  <Text style={styles.keySectionMeta}>Ctrl+Alt+Delete</Text>
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.securityButton,
+                    isSendingSecurityScreen && styles.primaryActionDisabled,
+                  ]}
+                  onPress={handleSecurityScreen}
+                  disabled={isSendingSecurityScreen}
+                  activeOpacity={0.88}
+                >
+                  {isSendingSecurityScreen ? (
+                    <ActivityIndicator size="small" color="#f5f6fb" />
+                  ) : (
+                    <ShieldAlert size={20} color="#f5f6fb" />
+                  )}
+                  <View style={styles.securityButtonCopy}>
+                    <Text style={styles.securityButtonText}>
+                      {isSendingSecurityScreen ? 'Sending security command...' : 'Windows Security'}
+                    </Text>
+                    <Text style={styles.securityButtonHint}>
+                      Opens the Ctrl+Alt+Delete screen, or locks the PC if Windows blocks it
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             <View style={[styles.keySection, styles.keySurfaceCard]}>
               <View style={styles.keySectionHeader}>
@@ -2802,6 +2978,33 @@ const styles = StyleSheet.create({
     color: '#ecfeff',
     fontSize: 11,
     fontWeight: '700',
+  },
+  securityButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minHeight: 56,
+    borderRadius: 14,
+    backgroundColor: '#16313c',
+    borderWidth: 1,
+    borderColor: 'rgba(103, 232, 249, 0.18)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 10,
+  },
+  securityButtonCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  securityButtonText: {
+    color: '#ecfeff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  securityButtonHint: {
+    color: '#8f92a8',
+    fontSize: 10,
+    fontWeight: '600',
   },
   functionGrid: {
     flexDirection: 'row',

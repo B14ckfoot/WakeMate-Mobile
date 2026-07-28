@@ -99,6 +99,38 @@ type CommandParams = Record<string, any>;
 type MouseButton = 'left' | 'right' | 'middle';
 type MouseButtonAction = 'down' | 'up';
 type ScrollDirection = 'up' | 'down';
+
+// Outcome vocabulary for the Windows security-screen command. `success`,
+// `unsupported`, `permission_required` and `execution_failed` come from the
+// companion's structured payload; `unauthorized`, `offline` and `timeout`
+// are derived here from the transport, because a companion that rejects or
+// never answers us cannot report on itself.
+export type SecurityScreenStatus =
+  | 'success'
+  | 'unsupported'
+  | 'unauthorized'
+  | 'offline'
+  | 'permission_required'
+  | 'execution_failed'
+  | 'timeout';
+
+// What the companion actually did, which is not always what was asked for.
+export type SecurityScreenAction = 'secure_attention_sequence' | 'lock' | 'none';
+
+export type SecurityScreenOutcome = {
+  status: SecurityScreenStatus;
+  action: SecurityScreenAction;
+  // True when `action` is the fallback rather than the real security screen.
+  fallbackUsed: boolean;
+  // Companion-supplied explanation, already trimmed and length-capped. Never
+  // rendered as the primary message -- the UI picks that from `status`.
+  detail: string | null;
+};
+
+// What to do when Windows refuses the real sequence. The phone always names
+// this explicitly so the companion can never substitute an action the user
+// was not asked to confirm.
+export type SecurityScreenFallback = 'none' | 'lock';
 type WakeRequestOptions = {
   wakeAddress?: string;
   wakePort?: number;
@@ -138,6 +170,14 @@ const COMPANION_HEALTH_TIMEOUT_MS = 1200;
 const COMPANION_PAIRING_TIMEOUT_MS = 1200;
 const DEVICE_STATUS_TIMEOUT_MS = 1200;
 const PAIRING_CACHE_TTL_MS = 15000;
+// Longer than the 5s used for ordinary commands: the companion may switch to
+// the secure desktop or shell out to lock the workstation before answering.
+const SECURITY_SCREEN_TIMEOUT_MS = 10000;
+// Companion `detail` text is shown to the user, so cap it rather than trust
+// its length.
+const SECURITY_SCREEN_DETAIL_MAX_CHARS = 240;
+const SECURE_ATTENTION_KEYSTROKE_MESSAGE =
+  'Ctrl+Alt+Delete cannot be sent as a keystroke. Use the Windows Security control instead.';
 
 const pairingValidationCache = new Map<string, { expiresAt: number; data: any }>();
 
@@ -959,6 +999,127 @@ const normalizeCompanionRequestError = (error: unknown, fallbackMessage: string)
   return new Error(fallbackMessage);
 };
 
+// True for Ctrl+Alt+Delete in any order or spelling, mirroring the
+// companion's own guard in `src/input.rs`.
+export const isSecureAttentionCombo = (key: string): boolean => {
+  const parts = key
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (parts.length !== 3) {
+    return false;
+  }
+
+  const seen = new Set<string>();
+  for (const part of parts) {
+    if (part === 'ctrl' || part === 'control') {
+      seen.add('control');
+    } else if (part === 'alt') {
+      seen.add('alt');
+    } else if (part === 'delete' || part === 'del') {
+      seen.add('delete');
+    } else {
+      return false;
+    }
+  }
+
+  return seen.size === 3;
+};
+
+const SECURITY_SCREEN_STATUSES: readonly SecurityScreenStatus[] = [
+  'success',
+  'unsupported',
+  'unauthorized',
+  'offline',
+  'permission_required',
+  'execution_failed',
+  'timeout',
+];
+
+const SECURITY_SCREEN_ACTIONS: readonly SecurityScreenAction[] = [
+  'secure_attention_sequence',
+  'lock',
+  'none',
+];
+
+const toSecurityScreenDetail = (value: unknown): string | null => {
+  const detail = toCandidateString(value);
+  return detail ? detail.slice(0, SECURITY_SCREEN_DETAIL_MAX_CHARS) : null;
+};
+
+// Reads the companion's structured result. Anything unrecognised is reported
+// as `execution_failed` rather than assumed successful -- an old or unexpected
+// companion must never make the app claim the security screen opened.
+const parseSecurityScreenPayload = (payload: unknown): SecurityScreenOutcome => {
+  const envelope = isRecord(payload) ? payload : null;
+  const result = envelope && isRecord(envelope.data) ? envelope.data : null;
+
+  const status = SECURITY_SCREEN_STATUSES.find((candidate) => candidate === result?.status);
+  const action = SECURITY_SCREEN_ACTIONS.find((candidate) => candidate === result?.action);
+  const detail = toSecurityScreenDetail(result?.detail) ?? toSecurityScreenDetail(envelope?.message);
+
+  if (!status) {
+    return {
+      status: 'execution_failed',
+      action: 'none',
+      fallbackUsed: false,
+      detail,
+    };
+  }
+
+  return {
+    status,
+    action: action ?? 'none',
+    fallbackUsed: result?.fallback_used === true,
+    detail,
+  };
+};
+
+// Maps a transport-level failure onto the same vocabulary. The companion
+// cannot describe its own unreachability, so these three states are decided
+// from the request itself.
+const classifySecurityScreenError = (error: unknown): SecurityScreenOutcome => {
+  const base = { action: 'none' as const, fallbackUsed: false };
+
+  if (isAxiosError(error)) {
+    const status = error.response?.status;
+    const detail = toSecurityScreenDetail(extractCompanionErrorMessage(error.response?.data));
+
+    if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message ?? '')) {
+      return { ...base, status: 'timeout', detail: null };
+    }
+
+    if (status === undefined) {
+      return { ...base, status: 'offline', detail: null };
+    }
+
+    if (isUnauthorizedStatus(status)) {
+      return { ...base, status: 'unauthorized', detail };
+    }
+
+    if (status === 403 || status === 429) {
+      return { ...base, status: 'permission_required', detail };
+    }
+
+    if (status === 501) {
+      return { ...base, status: 'unsupported', detail };
+    }
+
+    return { ...base, status: 'execution_failed', detail };
+  }
+
+  if (/timeout/i.test(error instanceof Error ? error.message : '')) {
+    return { ...base, status: 'timeout', detail: null };
+  }
+
+  return {
+    ...base,
+    status: 'execution_failed',
+    detail: toSecurityScreenDetail(error instanceof Error ? error.message : null),
+  };
+};
+
 const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
   switch (command) {
     case 'mouse_move':
@@ -995,10 +1156,26 @@ const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
         text: String(params.text ?? ''),
       };
     case 'keyboard_special':
-    case 'key_press':
+    case 'key_press': {
+      const key = String(params.key ?? '');
+
+      // Windows filters synthetic Ctrl+Alt+Delete out of the Secure Attention
+      // Sequence, so this never opens the security screen -- it only leaks a
+      // bare Delete into whatever window is focused. The companion refuses it
+      // too; this stops it before it leaves the phone.
+      if (isSecureAttentionCombo(key)) {
+        throw new Error(SECURE_ATTENTION_KEYSTROKE_MESSAGE);
+      }
+
       return {
         type: 'key_press',
-        key: String(params.key ?? ''),
+        key,
+      };
+    }
+    case 'security_screen':
+      return {
+        type: 'security_screen',
+        fallback: params.fallback === 'lock' ? 'lock' : 'none',
       };
     case 'media_play_pause':
       return { type: 'media', action: 'play_pause' };
@@ -1640,6 +1817,61 @@ const deviceService = {
 
   async sendLogoff(_deviceId: string, _deviceIp: string): Promise<any> {
     return this.sendCommandTo(undefined, 'logoff');
+  },
+
+  async sendLock(_deviceId: string, _deviceIp: string): Promise<any> {
+    return this.sendCommandTo(undefined, 'lock');
+  },
+
+  // Asks the companion to raise the Windows Ctrl+Alt+Delete security screen.
+  //
+  // Unlike the other commands this never throws: every path -- including an
+  // offline computer or a rejected token -- resolves to a
+  // `SecurityScreenOutcome`, so the caller has exactly one thing to render and
+  // cannot accidentally treat "no exception" as "it worked". It talks to
+  // `requestCompanion` directly rather than through `sendCommandTo` because
+  // the HTTP status is part of the answer here, and `sendCommandTo` folds it
+  // into a generic Error.
+  async sendSecurityScreen(
+    _deviceId: string,
+    deviceIp: string,
+    options: { fallback?: SecurityScreenFallback } = {}
+  ): Promise<SecurityScreenOutcome> {
+    const fallback: SecurityScreenFallback = options.fallback === 'lock' ? 'lock' : 'none';
+
+    let endpoint: { ip: string; port: number; tlsFingerprint: string | null };
+    let token: string;
+    try {
+      endpoint = await resolveTargetEndpoint(deviceIp);
+      token = await requireServerToken();
+    } catch (error) {
+      // No stored IP or no pairing token: the phone is not paired with a
+      // computer it can command, which is an authorization problem, not a
+      // failed execution.
+      return {
+        status: 'unauthorized',
+        action: 'none',
+        fallbackUsed: false,
+        detail: toSecurityScreenDetail(error instanceof Error ? error.message : null),
+      };
+    }
+
+    try {
+      const response = await requestCompanion<any>({
+        ip: endpoint.ip,
+        port: endpoint.port,
+        path: '/v1/command',
+        method: 'POST',
+        data: mapLegacyCommand('security_screen', { fallback }),
+        headers: buildAuthHeaders(token),
+        timeoutMs: SECURITY_SCREEN_TIMEOUT_MS,
+        tlsFingerprint: endpoint.tlsFingerprint,
+      });
+
+      return parseSecurityScreenPayload(response.data);
+    } catch (error) {
+      return classifySecurityScreenError(error);
+    }
   },
 
   async wakeMachine(device: Pick<Device, 'mac' | 'ip' | 'wakeAddress' | 'wakePort'>): Promise<any> {
