@@ -44,6 +44,20 @@ export const sanitizeWakePort = (
   return fallback;
 };
 
+export const DEFAULT_COMPANION_API_PORT = 7777;
+
+/** Companion ports, unlike wake ports, have no meaningful zero value. */
+export const sanitizeCompanionPort = (
+  value: string | number | null | undefined
+): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value).trim(), 10);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : null;
+};
+
 export const getSuggestedWakeAddress = (ip: string): string => {
   const trimmed = ip.trim();
   if (!isValidIpAddress(trimmed)) {
@@ -68,5 +82,9 @@ export const normalizeDevice = (device: DeviceSeed): Device => {
     status: device.status === 'online' ? 'online' : 'offline',
     type: device.type === 'bluetooth' ? 'bluetooth' : 'wifi',
     platform: normalizeDevicePlatform(device.platform),
+    // Every save funnels through here, so these have to be carried across or
+    // a device would silently lose its companion connection on any edit.
+    apiPort: sanitizeCompanionPort(device.apiPort) ?? DEFAULT_COMPANION_API_PORT,
+    tlsPort: sanitizeCompanionPort(device.tlsPort),
   };
 };

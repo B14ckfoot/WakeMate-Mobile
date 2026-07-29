@@ -17,11 +17,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../../src/types/device';
 import deviceService from '../../services/deviceService';
 import {
+  DEFAULT_COMPANION_API_PORT,
   DEFAULT_WAKE_PORT,
   getSuggestedWakeAddress,
   isValidIpAddress,
   isValidMacAddress,
   normalizeMacAddress,
+  sanitizeCompanionPort,
   sanitizeWakePort,
 } from '../../../src/utils/deviceNetwork';
 
@@ -36,6 +38,10 @@ export default function EditDeviceScreen() {
   const [pingAddress, setPingAddress] = useState('');
   const [wakeAddress, setWakeAddress] = useState('');
   const [wakePort, setWakePort] = useState(String(DEFAULT_WAKE_PORT));
+  const [apiPort, setApiPort] = useState(String(DEFAULT_COMPANION_API_PORT));
+  const [tlsPort, setTlsPort] = useState('');
+  const [pairingToken, setPairingToken] = useState('');
+  const [hasPinnedCertificate, setHasPinnedCertificate] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -58,6 +64,16 @@ export default function EditDeviceScreen() {
       setPingAddress(device.ip);
       setWakeAddress(device.wakeAddress);
       setWakePort(String(device.wakePort));
+      setApiPort(String(device.apiPort ?? DEFAULT_COMPANION_API_PORT));
+      setTlsPort(device.tlsPort ? String(device.tlsPort) : '');
+
+      // Secrets live in SecureStore keyed by device id, never in the record.
+      const [token, fingerprint] = await Promise.all([
+        deviceService.getDeviceCompanionToken(device.id),
+        deviceService.getDeviceCompanionTlsFingerprint(device.id),
+      ]);
+      setPairingToken(token ?? '');
+      setHasPinnedCertificate(Boolean(fingerprint));
     } catch (error) {
       console.error('Error loading device:', error);
       Alert.alert('Error', 'Failed to load device details');
@@ -128,10 +144,14 @@ export default function EditDeviceScreen() {
           ip: pingAddress.trim(),
           wakeAddress: wakeAddress.trim() || suggestedWakeAddress || pingAddress.trim(),
           wakePort: sanitizeWakePort(wakePort, DEFAULT_WAKE_PORT),
+          apiPort: sanitizeCompanionPort(apiPort) ?? DEFAULT_COMPANION_API_PORT,
+          tlsPort: sanitizeCompanionPort(tlsPort),
         };
       });
 
       await deviceService.saveDevices(updatedDevices);
+      // Scoped to this computer, so editing one never disturbs another.
+      await deviceService.setDeviceCompanionToken(id, pairingToken.trim() || null);
 
       Alert.alert('Success', 'Device updated successfully', [{ text: 'OK', onPress: () => router.back() }]);
     } catch (error) {
@@ -241,6 +261,51 @@ export default function EditDeviceScreen() {
               keyboardType="number-pad"
             />
             <Text style={styles.helperText}>Most devices use port 9, but some networks use 7 or 0.</Text>
+
+            <Text style={styles.sectionHeading}>Companion Connection</Text>
+            <Text style={styles.helperText}>
+              These belong to this computer only. Each saved PC keeps its own companion connection, so
+              pairing another one will not replace this.
+            </Text>
+
+            <Text style={styles.label}>Companion Port</Text>
+            <TextInput
+              style={styles.input}
+              value={apiPort}
+              onChangeText={setApiPort}
+              placeholder={String(DEFAULT_COMPANION_API_PORT)}
+              placeholderTextColor="#5f7480"
+              keyboardType="number-pad"
+            />
+            <Text style={styles.helperText}>Plain-HTTP port the WakeMATE companion listens on.</Text>
+
+            <Text style={styles.label}>Secure Port</Text>
+            <TextInput
+              style={styles.input}
+              value={tlsPort}
+              onChangeText={setTlsPort}
+              placeholder="Optional"
+              placeholderTextColor="#5f7480"
+              keyboardType="number-pad"
+            />
+            <Text style={styles.helperText}>
+              {hasPinnedCertificate
+                ? 'This computer has a pinned certificate, so WakeMATE uses the secure port.'
+                : 'Set automatically when you pair by scanning the QR code.'}
+            </Text>
+
+            <Text style={styles.label}>Pairing Token</Text>
+            <TextInput
+              style={styles.input}
+              value={pairingToken}
+              onChangeText={setPairingToken}
+              placeholder="Scan the companion QR code to fill this in"
+              placeholderTextColor="#5f7480"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            <Text style={styles.helperText}>Stored securely on this phone and only used for this computer.</Text>
 
             <TouchableOpacity
               style={[styles.saveButton, isSaving && styles.disabledButton]}
@@ -361,6 +426,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 6,
     lineHeight: 18,
+  },
+  sectionHeading: {
+    color: '#67e8f9',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    marginTop: 26,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#17323b',
   },
   saveButton: {
     backgroundColor: '#0891b2',

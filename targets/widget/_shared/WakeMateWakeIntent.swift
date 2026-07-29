@@ -167,13 +167,35 @@ enum WakeMatePendingWake {
     }
 }
 
+/// Failures the person pressing the control can actually act on. Control
+/// Center surfaces these, which is the only feedback channel available: an
+/// extension cannot bring the app forward (`ForegroundContinuableIntent` is
+/// unavailable in app extensions) and Control Center ignores custom URL
+/// schemes, so there is no way to hand off automatically.
+/// iOS 16+ because of `LocalizedStringResource`: this file is also compiled
+/// into the app target, which still deploys back to iOS 15.1.
+@available(iOS 16.0, *)
+enum WakeMateWakeError: Error, CustomLocalizedStringResourceConvertible {
+    case notConfigured
+    case couldNotSend
+
+    var localizedStringResource: LocalizedStringResource {
+        switch self {
+        case .notConfigured:
+            return "Press and hold this control, then choose a computer to wake."
+        case .couldNotSend:
+            return "Couldn't reach the network. Open WakeMATE once to finish waking this computer."
+        }
+    }
+}
+
 @available(iOS 17.0, *)
-struct WakeMateWakeDeviceIntent: AppIntent, ForegroundContinuableIntent {
+struct WakeMateWakeDeviceIntent: AppIntent {
     static let title: LocalizedStringResource = "Wake Computer"
     static let description = IntentDescription("Send a Wake-on-LAN magic packet to a saved computer.")
 
-    /// Opening the app is the fallback, not the happy path, so this stays
-    /// false — a successful wake never launches WakeMATE.
+    /// The whole point of this control is waking without launching anything,
+    /// and this cannot be decided per-run — it is read before `perform()`.
     static let openAppWhenRun: Bool = false
 
     /// Plumbing for the Control Center button, not a Shortcuts action: its
@@ -193,9 +215,8 @@ struct WakeMateWakeDeviceIntent: AppIntent, ForegroundContinuableIntent {
     func perform() async throws -> some IntentResult {
         guard let device = WakeMateSharedStore.device(id: deviceID) else {
             // Either the control was never configured, or the saved device is
-            // gone. Both need the app, so hand over without recording a wake.
-            await handOffToApp()
-            return .result()
+            // gone. Nothing to record, so just say what to do about it.
+            throw WakeMateWakeError.notConfigured
         }
 
         if WakeMateMagicPacket.wake(device: device) {
@@ -203,23 +224,10 @@ struct WakeMateWakeDeviceIntent: AppIntent, ForegroundContinuableIntent {
         }
 
         // The packet could not leave the extension — most likely the
-        // local-network privilege is still undetermined for this install.
-        // Record the request and let the app finish it, since only the app can
-        // surface the system prompt.
+        // local-network privilege is still undetermined for this install, and
+        // only the app can surface that system prompt. Leave the request for
+        // the app to finish and tell the user to open it.
         WakeMatePendingWake.record(deviceID: device.id)
-        await handOffToApp()
-        return .result()
-    }
-
-    /// Brings WakeMATE forward to finish the job. Failure here is not worth
-    /// surfacing as an intent error: any recorded request is still picked up
-    /// the next time the app is opened, so a swallowed error costs a tap, not
-    /// the wake.
-    private func handOffToApp() async {
-        do {
-            try await requestToContinueInForeground()
-        } catch {
-            return
-        }
+        throw WakeMateWakeError.couldNotSend
     }
 }

@@ -122,43 +122,30 @@ export default function ScanDeviceQrScreen() {
 
         let pairingSummary = '';
         if (pairingToken) {
-          try {
-            await deviceService.setServerConnection(savedDevice.ip, connectionPort);
-            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
-            await deviceService.setServerToken(pairingToken);
+          // Credentials are stored against this computer, so pairing a second
+          // machine no longer overwrites the first.
+          const result = await deviceService.pairDeviceFromQr(savedDevice.id, {
+            ip: savedDevice.ip,
+            token: pairingToken,
+            tlsFingerprint: pairingQr.tlsFingerprint,
+            apiPort: pairingQr.apiPort,
+            tlsPort: pairingQr.tlsPort,
+            phoneName: getThisPhoneDisplayName(),
+            timeoutMs: 45000,
+          });
 
-            // Protocol v3: swap the QR token for a per-device token so this
-            // phone can be revoked individually from the companion tray.
-            // Older companions fall back to the shared-token activation.
-            const enrollment = await deviceService.enrollDevice(
-              savedDevice.ip,
-              getThisPhoneDisplayName()
-            );
-
-            let approval: 'approved' | 'denied' | 'timeout' | 'unsupported';
-            if (enrollment) {
-              approval = await deviceService.waitForPairingApproval(savedDevice.ip, {
-                timeoutMs: 30000,
-                deviceId: enrollment.deviceId,
-              });
-              if (approval === 'approved') {
-                await deviceService.setServerToken(enrollment.deviceToken);
-              }
-            } else {
-              await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
-              approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
-            }
-
-            if (approval === 'approved' || approval === 'unsupported') {
-              pairingSummary = ' Remote controls are enabled.';
-            } else if (approval === 'denied') {
-              pairingSummary = ' The pairing request was denied on the computer; remote controls stay off.';
-            } else {
-              pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
-            }
-          } catch (pairingError) {
-            console.error('Error pairing from QR scan:', pairingError);
-            pairingSummary = ' The pairing token was saved, but pairing could not be completed yet — finish it in Settings.';
+          if (result.status === 'approved' || result.status === 'unsupported') {
+            pairingSummary = ' Remote controls are enabled.';
+          } else if (result.status === 'denied') {
+            pairingSummary = ' The pairing request was denied on the computer; remote controls stay off.';
+          } else if (result.status === 'timeout') {
+            pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
+          } else {
+            // Say what actually went wrong rather than sending the user to
+            // Settings with no explanation.
+            pairingSummary = result.detail
+              ? ` Pairing did not finish: ${result.detail}`
+              : ' Pairing did not finish. Make sure the WakeMATE companion is running, then try the scan again.';
           }
         }
 

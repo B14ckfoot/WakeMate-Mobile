@@ -41,7 +41,7 @@ export default function DeviceDetailScreen() {
 
       if (refreshStatus) {
         setIsRefreshingStatus(true);
-        const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip);
+        const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip, foundDevice.id);
         const nextStatus = isOnline ? 'online' : 'offline';
 
         if (nextStatus !== foundDevice.status) {

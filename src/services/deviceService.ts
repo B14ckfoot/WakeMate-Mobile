@@ -18,6 +18,15 @@ import {
   normalizeTlsFingerprint,
   requestCompanion,
 } from './companionTransport';
+import {
+  clearDeviceCredentials,
+  clearLegacyCredentials,
+  getDeviceTlsFingerprint,
+  getDeviceToken,
+  readLegacyCredentials,
+  setDeviceTlsFingerprint,
+  setDeviceToken,
+} from './companionCredentials';
 
 const SERVER_IP_KEY = 'serverIp';
 const SERVER_PORT_KEY = 'serverPort';
@@ -804,10 +813,72 @@ const getStoredServerPort = async (): Promise<number | null> => {
   }
 };
 
+type CompanionEndpoint = { ip: string; port: number; tlsFingerprint: string | null };
+
+// Finds a saved computer by id, without going through `getDevices()` -- that
+// runs the widget sync and legacy migration, which would recurse.
+const findSavedDevice = async (deviceId: string | null | undefined): Promise<Device | null> => {
+  const trimmedId = deviceId?.trim();
+  if (!trimmedId) {
+    return null;
+  }
+
+  try {
+    const raw = await AsyncStorage.getItem('devices');
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+
+    const match = parsed.find((entry) => isRecord(entry) && entry.id === trimmedId);
+    return match ? normalizeDevice(match as any) : null;
+  } catch (error) {
+    console.error('Error reading the saved device for a companion request:', error);
+    return null;
+  }
+};
+
+// Resolves which companion to talk to, preferring the saved computer's own
+// connection details over the pre-multi-device globals.
+//
+// `deviceId` is what makes multiple computers work: without it we fall back to
+// the legacy single-companion values, which is only correct while a user still
+// has one unmigrated computer.
 const resolveTargetEndpoint = async (
   explicitIp?: string | null,
-  explicitPort?: number | null
-): Promise<{ ip: string; port: number; tlsFingerprint: string | null }> => {
+  explicitPort?: number | null,
+  deviceId?: string | null
+): Promise<CompanionEndpoint> => {
+  const device = await findSavedDevice(deviceId);
+
+  if (device) {
+    const targetIp = normalizeStoredValue(explicitIp) ?? device.ip;
+    const fingerprint = await getDeviceTlsFingerprint(device.id);
+    // The pin belongs to the address it was scanned from. Talking to a
+    // different host on the same record must not reuse it.
+    const usableFingerprint = targetIp === device.ip ? fingerprint : null;
+
+    if (explicitPort !== null && explicitPort !== undefined) {
+      return {
+        ip: targetIp,
+        port: normalizeDiscoveredPort(explicitPort, DEFAULT_API_PORT),
+        tlsFingerprint: usableFingerprint,
+      };
+    }
+
+    // A fingerprint means pinned HTTPS, which listens on the TLS port.
+    const preferredPort = usableFingerprint ? device.tlsPort ?? null : device.apiPort ?? null;
+    return {
+      ip: targetIp,
+      port: normalizeDiscoveredPort(preferredPort, DEFAULT_API_PORT),
+      tlsFingerprint: usableFingerprint,
+    };
+  }
+
   const [storedIpValue, storedTlsFingerprint] = await Promise.all([
     AsyncStorage.getItem(SERVER_IP_KEY),
     readStoredTlsFingerprint(),
@@ -1204,7 +1275,19 @@ const mapLegacyCommand = (command: string, params: CommandParams = {}) => {
   }
 };
 
-const requireServerToken = async (): Promise<string> => {
+// Prefers the computer's own pairing token, falling back to the legacy shared
+// one so a user who has not re-paired since the multi-device change keeps
+// working.
+const requireServerToken = async (deviceId?: string | null): Promise<string> => {
+  const trimmedId = deviceId?.trim();
+
+  if (trimmedId) {
+    const deviceToken = normalizeStoredValue(await getDeviceToken(trimmedId));
+    if (deviceToken) {
+      return deviceToken;
+    }
+  }
+
   const token = normalizeStoredValue(await deviceService.getServerToken());
 
   if (!token) {
@@ -1215,11 +1298,23 @@ const requireServerToken = async (): Promise<string> => {
 };
 
 const deviceService = {
-  async getCompanionSetupError(options: { requireToken?: boolean; validateToken?: boolean; serverIp?: string } = {}): Promise<string | null> {
+  async getCompanionSetupError(
+    options: {
+      requireToken?: boolean;
+      validateToken?: boolean;
+      serverIp?: string;
+      deviceId?: string | null;
+    } = {}
+  ): Promise<string | null> {
     const requireToken = options.requireToken ?? true;
+    const deviceId = options.deviceId?.trim() || null;
     const [serverIp, token] = await Promise.all([
       options.serverIp ? Promise.resolve(options.serverIp) : this.getServerAddress(),
-      this.getServerToken(),
+      // Fall back to the legacy shared token so an unmigrated setup still
+      // reports itself as paired.
+      deviceId
+        ? getDeviceToken(deviceId).then((value) => value ?? this.getServerToken())
+        : this.getServerToken(),
     ]);
 
     if (!normalizeStoredValue(serverIp)) {
@@ -1232,7 +1327,7 @@ const deviceService = {
 
     if (options.validateToken && requireToken) {
       try {
-        await this.checkPairing(serverIp ?? undefined);
+        await this.checkPairing(serverIp ?? undefined, deviceId);
       } catch (error) {
         return normalizeCompanionRequestError(
           error,
@@ -1370,18 +1465,239 @@ const deviceService = {
         return [];
       }
 
-      return parsedDevices.map((device) => normalizeDevice(device));
+      const normalized = parsedDevices.map((device) => normalizeDevice(device));
+      return this.migrateLegacyCompanionCredentials(normalized);
     } catch (error) {
       console.error('Error getting devices:', error);
       return [];
     }
   },
 
+  // Adopts the pre-multi-device globals onto the one computer they belonged
+  // to, matched by IP. Runs at most once: the legacy keys are cleared after a
+  // successful adoption, and a no-op when there is nothing to migrate.
+  //
+  // Deliberately conservative -- if the old IP matches no saved computer we
+  // leave the globals alone rather than guess, and `resolveTargetEndpoint`
+  // keeps falling back to them.
+  async migrateLegacyCompanionCredentials(devices: Device[]): Promise<Device[]> {
+    try {
+      const legacyIp = normalizeStoredValue(await AsyncStorage.getItem(SERVER_IP_KEY));
+      if (!legacyIp) {
+        return devices;
+      }
+
+      const target = devices.find((device) => device.ip === legacyIp);
+      if (!target) {
+        return devices;
+      }
+
+      const [{ token, fingerprint }, legacyPort] = await Promise.all([
+        readLegacyCredentials(),
+        getStoredServerPort(),
+      ]);
+
+      if (!token) {
+        return devices;
+      }
+
+      // A stored fingerprint means the legacy port was the TLS one.
+      const migrated: Device = {
+        ...target,
+        apiPort: fingerprint ? target.apiPort ?? DEFAULT_API_PORT : legacyPort ?? DEFAULT_API_PORT,
+        tlsPort: fingerprint ? legacyPort ?? target.tlsPort ?? null : target.tlsPort ?? null,
+      };
+
+      await setDeviceToken(target.id, token);
+      if (fingerprint) {
+        await setDeviceTlsFingerprint(target.id, fingerprint);
+      }
+
+      const nextDevices = devices.map((device) => (device.id === target.id ? migrated : device));
+      await AsyncStorage.setItem('devices', JSON.stringify(nextDevices));
+
+      // Only now is it safe to drop the originals; a crash before this point
+      // just replays the migration next launch.
+      await clearLegacyCredentials();
+      await AsyncStorage.multiRemove([SERVER_IP_KEY, SERVER_PORT_KEY]);
+
+      return nextDevices;
+    } catch (error) {
+      console.warn('Could not migrate the legacy companion credentials:', error);
+      return devices;
+    }
+  },
+
+  // Completes pairing for one computer in a single call: store its connection
+  // details and QR token, swap that for a per-device token where the companion
+  // supports it, then wait for the desktop approval.
+  //
+  // Every step degrades instead of aborting. The previous flow gave up the
+  // moment enrollment threw -- it only fell back to the legacy activation when
+  // enrollment returned null (a 404) -- so one transient 429 ("another pairing
+  // request is already waiting") or a 403 from the pre-logon service left the
+  // token saved but the pairing unfinished, with no reason shown.
+  async pairDeviceFromQr(
+    deviceId: string,
+    options: {
+      ip: string;
+      token: string;
+      tlsFingerprint?: string | null;
+      apiPort?: number | null;
+      tlsPort?: number | null;
+      phoneName?: string | null;
+      timeoutMs?: number;
+    }
+  ): Promise<{
+    status: 'approved' | 'denied' | 'timeout' | 'unsupported' | 'failed';
+    detail: string | null;
+  }> {
+    const timeoutMs = options.timeoutMs ?? 45000;
+    const fingerprint = normalizeTlsFingerprint(options.tlsFingerprint);
+
+    // Persist the connection first so every later call resolves to this
+    // computer, not whichever one was paired last.
+    await this.setDeviceCompanionConnection(deviceId, {
+      ip: options.ip,
+      apiPort: options.apiPort ?? null,
+      tlsPort: options.tlsPort ?? null,
+    });
+    await setDeviceTlsFingerprint(deviceId, fingerprint);
+    await setDeviceToken(deviceId, options.token);
+
+    let enrollment: { deviceId: string; deviceToken: string } | null = null;
+    let enrollmentError: string | null = null;
+
+    // One retry: a pending prompt from an earlier scan makes the companion
+    // answer 429 until it clears.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        enrollment = await this.enrollDevice(options.ip, options.phoneName, deviceId);
+        enrollmentError = null;
+        break;
+      } catch (error) {
+        enrollmentError = error instanceof Error ? error.message : 'Enrollment failed.';
+        const isBusy = isAxiosError(error) && error.response?.status === 429;
+        if (!isBusy || attempt === 1) {
+          break;
+        }
+        await wait(3000);
+      }
+    }
+
+    try {
+      if (enrollment) {
+        const approval = await this.waitForPairingApproval(options.ip, {
+          timeoutMs,
+          deviceId: enrollment.deviceId,
+          localDeviceId: deviceId,
+        });
+
+        if (approval === 'approved') {
+          // Only now replace the shared QR token: if this write happened
+          // earlier and approval never came, the device would be left holding
+          // a token the companion has not activated.
+          await setDeviceToken(deviceId, enrollment.deviceToken);
+        }
+
+        return { status: approval, detail: null };
+      }
+
+      // No enrollment -- either an older companion (404) or a failure we are
+      // deliberately not treating as fatal. The shared-token activation still
+      // gets remote controls switched on.
+      await this.activatePairedControls(options.ip, options.token, deviceId);
+      const approval = await this.waitForPairingApproval(options.ip, {
+        timeoutMs,
+        localDeviceId: deviceId,
+      });
+
+      return { status: approval, detail: enrollmentError };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : null;
+      return { status: 'failed', detail: detail ?? enrollmentError };
+    }
+  },
+
+  async getDeviceCompanionToken(deviceId: string): Promise<string | null> {
+    return getDeviceToken(deviceId);
+  },
+
+  async setDeviceCompanionToken(deviceId: string, token: string | null): Promise<void> {
+    await setDeviceToken(deviceId, token);
+  },
+
+  async setDeviceCompanionTlsFingerprint(
+    deviceId: string,
+    fingerprint: string | null
+  ): Promise<void> {
+    await setDeviceTlsFingerprint(deviceId, fingerprint);
+  },
+
+  async getDeviceCompanionTlsFingerprint(deviceId: string): Promise<string | null> {
+    return getDeviceTlsFingerprint(deviceId);
+  },
+
+  // Saves one computer's connection details without touching any other.
+  async setDeviceCompanionConnection(
+    deviceId: string,
+    connection: { ip?: string; apiPort?: number | null; tlsPort?: number | null }
+  ): Promise<Device | null> {
+    const devices = await this.getDevices();
+    const target = devices.find((device) => device.id === deviceId);
+    if (!target) {
+      return null;
+    }
+
+    const updated: Device = {
+      ...target,
+      ip: connection.ip?.trim() || target.ip,
+      apiPort: connection.apiPort ?? target.apiPort,
+      tlsPort: connection.tlsPort === undefined ? target.tlsPort : connection.tlsPort,
+    };
+
+    await this.saveDevices(
+      devices.map((device) => (device.id === deviceId ? updated : device))
+    );
+    return updated;
+  },
+
+  async clearDeviceCompanionCredentials(deviceId: string): Promise<void> {
+    await clearDeviceCredentials(deviceId);
+  },
+
   async saveDevices(devices: Device[]): Promise<void> {
     try {
       const normalizedDevices = devices.map((device) => normalizeDevice(device));
+
+      // Deleting a computer happens by filtering this list, in more than one
+      // screen. Pruning here means no caller has to remember to clear the
+      // secrets, and a removed computer never leaves a usable token behind.
+      const previousRaw = await AsyncStorage.getItem('devices');
+      const survivingIds = new Set(normalizedDevices.map((device) => device.id));
+      let removedIds: string[] = [];
+      try {
+        const previous = previousRaw ? JSON.parse(previousRaw) : [];
+        if (Array.isArray(previous)) {
+          removedIds = previous
+            .filter((entry) => isRecord(entry) && typeof entry.id === 'string')
+            .map((entry) => (entry as { id: string }).id)
+            .filter((id) => !survivingIds.has(id));
+        }
+      } catch {
+        // Unreadable previous list: nothing reliable to prune.
+      }
+
       await AsyncStorage.setItem('devices', JSON.stringify(normalizedDevices));
       syncDevicesToWidgetStorage(normalizedDevices);
+
+      await Promise.all(
+        removedIds.map((id) =>
+          clearDeviceCredentials(id).catch((error) => {
+            console.warn('Could not clear credentials for a removed device:', error);
+          })
+        )
+      );
     } catch (error) {
       console.error('Error saving devices:', error);
       throw error;
@@ -1471,13 +1787,13 @@ const deviceService = {
     return discovery?.serverIp ?? null;
   },
 
-  async checkPairing(serverIp?: string): Promise<any> {
+  async checkPairing(serverIp?: string, localDeviceId?: string | null): Promise<any> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = await requireServerToken();
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = await requireServerToken(localDeviceId);
     const cacheKey = `${targetIp}:${targetPort}:${tlsFingerprint ?? 'http'}:${token}`;
     const cachedResult = pairingValidationCache.get(cacheKey);
 
@@ -1506,7 +1822,11 @@ const deviceService = {
     }
   },
 
-  async getPairingStatus(serverIp?: string, deviceId?: string | null): Promise<{
+  async getPairingStatus(
+    serverIp?: string,
+    deviceId?: string | null,
+    localDeviceId?: string | null
+  ): Promise<{
     approval: 'idle' | 'pending' | 'approved' | 'denied' | '';
     allowInputCommands: boolean;
     allowPowerCommands: boolean;
@@ -1515,8 +1835,8 @@ const deviceService = {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = await requireServerToken();
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = await requireServerToken(localDeviceId);
     const trimmedDeviceId = deviceId?.trim();
     const statusPath = trimmedDeviceId
       ? `/v1/pairing/status?device_id=${encodeURIComponent(trimmedDeviceId)}`
@@ -1554,15 +1874,21 @@ const deviceService = {
 
   async waitForPairingApproval(
     serverIp?: string,
-    options: { timeoutMs?: number; intervalMs?: number; deviceId?: string | null } = {}
+    options: {
+      timeoutMs?: number;
+      intervalMs?: number;
+      deviceId?: string | null;
+      localDeviceId?: string | null;
+    } = {}
   ): Promise<'approved' | 'denied' | 'timeout' | 'unsupported'> {
     const timeoutMs = options.timeoutMs ?? 45000;
     const intervalMs = options.intervalMs ?? 2000;
     const deviceId = options.deviceId?.trim() || null;
+    const localDeviceId = options.localDeviceId?.trim() || null;
     const deadline = Date.now() + timeoutMs;
 
     for (;;) {
-      const status = await this.getPairingStatus(serverIp, deviceId);
+      const status = await this.getPairingStatus(serverIp, deviceId, localDeviceId);
 
       if (!status) {
         return 'unsupported';
@@ -1598,14 +1924,15 @@ const deviceService = {
    */
   async enrollDevice(
     serverIp?: string,
-    deviceName?: string | null
+    deviceName?: string | null,
+    localDeviceId?: string | null
   ): Promise<{ deviceId: string; deviceToken: string } | null> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = await requireServerToken();
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = await requireServerToken(localDeviceId);
 
     try {
       const response = await requestCompanion<any>({
@@ -1633,13 +1960,17 @@ const deviceService = {
     }
   },
 
-  async activatePairedControls(serverIp?: string, tokenOverride?: string | null): Promise<any> {
+  async activatePairedControls(
+    serverIp?: string,
+    tokenOverride?: string | null,
+    localDeviceId?: string | null
+  ): Promise<any> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = normalizeStoredValue(tokenOverride) ?? await requireServerToken();
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = normalizeStoredValue(tokenOverride) ?? await requireServerToken(localDeviceId);
     try {
       const response = await requestCompanion<any>({
         ip: targetIp,
@@ -1658,9 +1989,13 @@ const deviceService = {
     }
   },
 
-  async checkDeviceStatus(deviceIp: string): Promise<boolean> {
+  async checkDeviceStatus(deviceIp: string, localDeviceId?: string | null): Promise<boolean> {
     try {
-      const { port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(deviceIp);
+      const { port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(
+        deviceIp,
+        null,
+        localDeviceId
+      );
       const response = await requestCompanion<any>({
         ip: deviceIp,
         port: targetPort,
@@ -1679,13 +2014,18 @@ const deviceService = {
     }
   },
 
-  async sendWakeRequest(mac: string, serverIp?: string, options: WakeRequestOptions = {}): Promise<any> {
+  async sendWakeRequest(
+    mac: string,
+    serverIp?: string,
+    options: WakeRequestOptions = {},
+    localDeviceId?: string | null
+  ): Promise<any> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = await requireServerToken();
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = await requireServerToken(localDeviceId);
     try {
       const response = await requestCompanion<any>({
         ip: targetIp,
@@ -1708,12 +2048,17 @@ const deviceService = {
     }
   },
 
-  async sendCommandTo(targetIp: string | null | undefined, command: string, params: CommandParams = {}): Promise<any> {
+  async sendCommandTo(
+    targetIp: string | null | undefined,
+    command: string,
+    params: CommandParams = {},
+    deviceId?: string | null
+  ): Promise<any> {
     const {
       ip: serverIp,
       port: serverPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(targetIp);
+    } = await resolveTargetEndpoint(targetIp, null, deviceId);
 
     if (command === 'get_status') {
       return this.getCompanionInfo(serverIp);
@@ -1726,7 +2071,7 @@ const deviceService = {
       });
     }
 
-    const token = await requireServerToken();
+    const token = await requireServerToken(deviceId);
 
     try {
       const payload = mapLegacyCommand(command, params);
@@ -1751,76 +2096,76 @@ const deviceService = {
     return this.sendCommandTo(undefined, command, params);
   },
 
-  async sendMouseMove(_deviceId: string, _deviceIp: string, dx: number, dy: number): Promise<any> {
-    return this.sendCommandTo(undefined, 'mouse_move', { dx, dy });
+  async sendMouseMove(deviceId: string, deviceIp: string, dx: number, dy: number): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'mouse_move', { dx, dy }, deviceId);
   },
 
-  async sendMouseClick(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
-    return this.sendCommandTo(undefined, 'mouse_click', { button });
+  async sendMouseClick(deviceId: string, deviceIp: string, button: MouseButton): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'mouse_click', { button }, deviceId);
   },
 
-  async sendMouseButtonDown(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
-    return this.sendCommandTo(undefined, 'mouse_button', { button, action: 'down' });
+  async sendMouseButtonDown(deviceId: string, deviceIp: string, button: MouseButton): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'mouse_button', { button, action: 'down' }, deviceId);
   },
 
-  async sendMouseButtonUp(_deviceId: string, _deviceIp: string, button: MouseButton): Promise<any> {
-    return this.sendCommandTo(undefined, 'mouse_button', { button, action: 'up' });
+  async sendMouseButtonUp(deviceId: string, deviceIp: string, button: MouseButton): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'mouse_button', { button, action: 'up' }, deviceId);
   },
 
-  async sendScroll(_deviceId: string, _deviceIp: string, amount: number): Promise<any> {
-    return this.sendCommandTo(undefined, 'mouse_scroll', { amount });
+  async sendScroll(deviceId: string, deviceIp: string, amount: number): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'mouse_scroll', { amount }, deviceId);
   },
 
-  async sendKeyboardInput(_deviceId: string, _deviceIp: string, text: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'text_input', { text });
+  async sendKeyboardInput(deviceId: string, deviceIp: string, text: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'text_input', { text }, deviceId);
   },
 
-  async sendSpecialKey(_deviceId: string, _deviceIp: string, key: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'key_press', { key });
+  async sendSpecialKey(deviceId: string, deviceIp: string, key: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'key_press', { key }, deviceId);
   },
 
-  async sendMediaPlayPause(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'media_play_pause');
+  async sendMediaPlayPause(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'media_play_pause', {}, deviceId);
   },
 
-  async sendMediaNext(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'media_next');
+  async sendMediaNext(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'media_next', {}, deviceId);
   },
 
-  async sendMediaPrevious(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'media_prev');
+  async sendMediaPrevious(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'media_prev', {}, deviceId);
   },
 
-  async sendVolumeUp(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'volume_up');
+  async sendVolumeUp(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'volume_up', {}, deviceId);
   },
 
-  async sendVolumeDown(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'volume_down');
+  async sendVolumeDown(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'volume_down', {}, deviceId);
   },
 
-  async sendVolumeMute(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'volume_mute');
+  async sendVolumeMute(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'volume_mute', {}, deviceId);
   },
 
-  async sendShutdown(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'shutdown');
+  async sendShutdown(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'shutdown', {}, deviceId);
   },
 
-  async sendRestart(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'restart');
+  async sendRestart(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'restart', {}, deviceId);
   },
 
-  async sendSleep(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'sleep');
+  async sendSleep(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'sleep', {}, deviceId);
   },
 
-  async sendLogoff(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'logoff');
+  async sendLogoff(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'logoff', {}, deviceId);
   },
 
-  async sendLock(_deviceId: string, _deviceIp: string): Promise<any> {
-    return this.sendCommandTo(undefined, 'lock');
+  async sendLock(deviceId: string, deviceIp: string): Promise<any> {
+    return this.sendCommandTo(deviceIp, 'lock', {}, deviceId);
   },
 
   // Asks the companion to raise the Windows Ctrl+Alt+Delete security screen.
@@ -1833,7 +2178,7 @@ const deviceService = {
   // the HTTP status is part of the answer here, and `sendCommandTo` folds it
   // into a generic Error.
   async sendSecurityScreen(
-    _deviceId: string,
+    deviceId: string,
     deviceIp: string,
     options: { fallback?: SecurityScreenFallback } = {}
   ): Promise<SecurityScreenOutcome> {
@@ -1842,8 +2187,8 @@ const deviceService = {
     let endpoint: { ip: string; port: number; tlsFingerprint: string | null };
     let token: string;
     try {
-      endpoint = await resolveTargetEndpoint(deviceIp);
-      token = await requireServerToken();
+      endpoint = await resolveTargetEndpoint(deviceIp, null, deviceId);
+      token = await requireServerToken(deviceId);
     } catch (error) {
       // No stored IP or no pairing token: the phone is not paired with a
       // computer it can command, which is an authorization problem, not a
@@ -1874,7 +2219,7 @@ const deviceService = {
     }
   },
 
-  async wakeMachine(device: Pick<Device, 'mac' | 'ip' | 'wakeAddress' | 'wakePort'>): Promise<any> {
+  async wakeMachine(device: Pick<Device, 'mac' | 'ip' | 'wakeAddress' | 'wakePort'> & { id?: string }): Promise<any> {
     const mac = device.mac.trim();
     if (!mac) {
       throw new Error('MAC address is required for wake operation');
@@ -1906,7 +2251,12 @@ const deviceService = {
     }
 
     console.warn('Direct Wake-on-LAN failed for all candidate broadcast addresses, falling back to companion relay:', directWakeError);
-    return this.sendWakeRequest(mac, undefined, { wakeAddress: wakeAddresses[0] || device.ip.trim(), wakePort });
+    return this.sendWakeRequest(
+      mac,
+      undefined,
+      { wakeAddress: wakeAddresses[0] || device.ip.trim(), wakePort },
+      device.id
+    );
   },
 };
 

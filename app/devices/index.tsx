@@ -38,7 +38,7 @@ export default function DevicesScreen() {
     try {
       const statusResults = await Promise.allSettled(
         deviceList.map(async (device) => {
-          const isOnline = await deviceService.checkDeviceStatus(device.ip);
+          const isOnline = await deviceService.checkDeviceStatus(device.ip, device.id);
           return {
             ...device,
             status: isOnline ? 'online' : 'offline',

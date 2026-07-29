@@ -415,9 +415,17 @@ export default function DeviceControlScreen() {
         setLoading(false);
       }
 
+      // Scoped to this computer: with several paired PCs, the global pairing
+      // state says nothing about whether *this* one is reachable.
       const [companionSetupError, isOnline] = await Promise.all([
-        deviceService.getCompanionSetupError({ validateToken: true }),
-        refreshStatus ? deviceService.checkDeviceStatus(foundDevice.ip) : Promise.resolve(foundDevice.status === 'online'),
+        deviceService.getCompanionSetupError({
+          validateToken: true,
+          serverIp: foundDevice.ip,
+          deviceId: foundDevice.id,
+        }),
+        refreshStatus
+          ? deviceService.checkDeviceStatus(foundDevice.ip, foundDevice.id)
+          : Promise.resolve(foundDevice.status === 'online'),
       ]);
 
       let nextDevice = foundDevice;
