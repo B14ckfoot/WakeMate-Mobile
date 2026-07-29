@@ -93,6 +93,9 @@ export default function SettingsScreen() {
   useFocusEffect(
     useCallback(() => {
       loadData();
+      // Pull in any connection the device-QR pairing screen saved while this
+      // screen was not focused, so the IP/token fields show the scanned
+      // values instead of appearing empty.
       refreshFromStorage();
     }, [loadData, refreshFromStorage])
   );

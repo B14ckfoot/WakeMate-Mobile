@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import deviceService from '../services/deviceService';
+import { useServer } from '../../src/context/ServerContext';
 import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
 import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
 import { parsePairingQrConnection } from '../../src/utils/pairingQr';
@@ -12,6 +13,7 @@ import { parsePairingQrConnection } from '../../src/utils/pairingQr';
 export default function ScanDeviceQrScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { refreshFromStorage } = useServer();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [isProcessing, setIsProcessing] = useState(false);
   const scanLockedRef = useRef(false);
@@ -84,6 +86,7 @@ export default function ScanDeviceQrScreen() {
             await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
           }
           await deviceService.setServerToken(pairingToken);
+          await refreshFromStorage();
           Alert.alert(
             'Pairing Token Saved',
             serverIp
@@ -147,6 +150,11 @@ export default function ScanDeviceQrScreen() {
               ? ` Pairing did not finish: ${result.detail}`
               : ' Pairing did not finish. Make sure the WakeMATE companion is running, then try the scan again.';
           }
+
+          // Everything above wrote through deviceService directly; sync the
+          // app-wide connection state so Settings shows the scanned IP and
+          // token without any manual re-entry.
+          await refreshFromStorage();
         }
 
         Alert.alert(
@@ -165,7 +173,7 @@ export default function ScanDeviceQrScreen() {
         setIsProcessing(false);
       }
     },
-    [router]
+    [refreshFromStorage, router]
   );
 
   const renderCameraBody = () => {
