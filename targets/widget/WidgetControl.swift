@@ -14,9 +14,14 @@ struct WakeMateControlWidget: ControlWidget {
             let selectedDevice = WakeMateSharedStore.device(id: configuration.device?.id)
             let deviceName = selectedDevice?.name ?? configuration.device?.name ?? "Choose Device"
 
+            // Not `OpenURLIntent`: Control Center refuses custom URL schemes,
+            // so `myapp://wake?deviceId=...` was silently dropped and the
+            // button did nothing at all. `WakeMateWakeDeviceIntent` sends the
+            // magic packet from this extension instead, and only falls back to
+            // opening the app when it cannot.
             ControlWidgetButton(
-                action: OpenURLIntent(
-                    WakeMateDeepLink.wakeURL(for: selectedDevice?.id ?? configuration.device?.id)
+                action: WakeMateWakeDeviceIntent(
+                    deviceID: selectedDevice?.id ?? configuration.device?.id
                 )
             ) {
                 Label(deviceName, systemImage: selectedDevice == nil ? "power.circle" : "power.circle.fill")

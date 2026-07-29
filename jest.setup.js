@@ -48,3 +48,17 @@ jest.mock('react-native-udp', () => ({
 jest.mock('react-native-wake-on-lan', () => ({
   sendMagicPacket: jest.fn(),
 }));
+
+// The app-group bridge into the widget extension. One shared instance so tests
+// can drive whatever the Control Center intent "wrote".
+jest.mock('@bacons/apple-targets', () => {
+  const instance = {
+    set: jest.fn(),
+    get: jest.fn(() => null),
+    remove: jest.fn(),
+  };
+  const ExtensionStorage = jest.fn(() => instance);
+  ExtensionStorage.reloadWidget = jest.fn();
+  ExtensionStorage.reloadControls = jest.fn();
+  return { ExtensionStorage };
+});
