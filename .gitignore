@@ -48,3 +48,8 @@ app-example
 # environment files
 .env
 venv/
+
+# Gradle local build caches. These are per-machine (lock files and binary
+# hashes) and were previously committed, which made them conflict on almost
+# every merge.
+.gradle/
