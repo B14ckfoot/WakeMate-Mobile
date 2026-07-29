@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
@@ -51,7 +51,11 @@ import {
   State,
 } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { VolumeManager } from 'react-native-volume-manager';
+import {
+  isHardwareVolumeRemoteAvailable,
+  requireHardwareVolumeManager,
+  restoreNativeVolumeUi,
+} from '../../../src/native/volumeManager';
 import { Device, DevicePlatform } from '../../../src/types/device';
 import deviceService, { SecurityScreenOutcome } from '../../../src/services/deviceService';
 import {
@@ -269,6 +273,8 @@ export default function DeviceControlScreen() {
   const baselineVolumeRef = useRef(0.5);
   const lastVolumeRef = useRef(0.5);
   const isResettingVolumeRef = useRef(false);
+
+  const hardwareVolumeAvailable = useMemo(() => isHardwareVolumeRemoteAvailable(), []);
 
   const trackingSpeedMultiplier = scaleSetting(controlSettings.trackingSpeed, TRACKING_SPEED_MIN, TRACKING_SPEED_MAX);
   const scrollingSpeedMultiplier = scaleSetting(controlSettings.scrollingSpeed, SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
@@ -1008,17 +1014,23 @@ export default function DeviceControlScreen() {
     handleHardwareVolumeRemoteStep(volumeDelta > 0 ? 'up' : 'down');
     isResettingVolumeRef.current = true;
 
-    void VolumeManager.setVolume(baselineVolumeRef.current, {
-      playSound: false,
-      showUI: false,
-    })
-      .then(() => {
-        lastVolumeRef.current = baselineVolumeRef.current;
-      })
-      .catch((error) => {
-        isResettingVolumeRef.current = false;
-        console.warn('Failed to restore hardware volume baseline:', error);
-      });
+    try {
+      void requireHardwareVolumeManager()
+        .setVolume(baselineVolumeRef.current, {
+          playSound: false,
+          showUI: false,
+        })
+        .then(() => {
+          lastVolumeRef.current = baselineVolumeRef.current;
+        })
+        .catch((error) => {
+          isResettingVolumeRef.current = false;
+          console.warn('Failed to restore hardware volume baseline:', error);
+        });
+    } catch (error) {
+      isResettingVolumeRef.current = false;
+      console.warn('Failed to restore hardware volume baseline:', error);
+    }
   }, [handleHardwareVolumeRemoteStep]);
 
   useEffect(() => {
@@ -1032,23 +1044,26 @@ export default function DeviceControlScreen() {
 
     if (!controlSettings.useVolumeButtons) {
       teardownVolumeListener();
-      void VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+      restoreNativeVolumeUi();
       return;
     }
 
     const enableHardwareVolumeRemote = async () => {
       try {
         teardownVolumeListener();
-        await VolumeManager.showNativeVolumeUI({ enabled: false });
+        // Throws when the native module is missing, which the catch below
+        // reports as the feature being unavailable.
+        const volumeManager = requireHardwareVolumeManager();
+        await volumeManager.showNativeVolumeUI({ enabled: false });
 
-        const { volume } = await VolumeManager.getVolume();
+        const { volume } = await volumeManager.getVolume();
         if (isCancelled) {
           return;
         }
 
         baselineVolumeRef.current = volume;
         lastVolumeRef.current = volume;
-        volumeListenerRef.current = VolumeManager.addVolumeListener(({ volume: changedVolume }) => {
+        volumeListenerRef.current = volumeManager.addVolumeListener(({ volume: changedVolume }) => {
           handleHardwareVolumeChange(changedVolume);
         });
       } catch (error) {
@@ -1070,7 +1085,7 @@ export default function DeviceControlScreen() {
     return () => {
       isCancelled = true;
       teardownVolumeListener();
-      void VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+      restoreNativeVolumeUi();
     };
   }, [controlSettings.useVolumeButtons, handleHardwareVolumeChange]);
 
@@ -2036,12 +2051,15 @@ export default function DeviceControlScreen() {
                 <View style={styles.settingsToggleCopy}>
                   <Text style={styles.settingsToggleTitle}>Volume Button Remote</Text>
                   <Text style={styles.settingsToggleDescription}>
-                    Uses your phone&apos;s physical volume buttons for PC volume up and down while this screen is open.
+                    {hardwareVolumeAvailable
+                      ? "Uses your phone's physical volume buttons for PC volume up and down while this screen is open."
+                      : 'Unavailable in this build. Use a development build on a real device to capture volume presses.'}
                   </Text>
                 </View>
                 <Switch
                   value={controlSettings.useVolumeButtons}
                   onValueChange={(value) => setControlSettings((current) => ({ ...current, useVolumeButtons: value }))}
+                  disabled={!hardwareVolumeAvailable}
                   trackColor={{ false: '#203640', true: '#0ea5c7' }}
                   thumbColor={controlSettings.useVolumeButtons ? '#f8fdff' : '#c0d5dd'}
                 />
