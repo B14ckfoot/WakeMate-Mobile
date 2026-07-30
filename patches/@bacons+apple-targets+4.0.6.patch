@@ -1,40 +1,8 @@
-diff --git a/node_modules/@bacons/apple-targets/build/configuration-list.js b/node_modules/@bacons/apple-targets/build/configuration-list.js
-index 8b042f9..6faca71 100644
---- a/node_modules/@bacons/apple-targets/build/configuration-list.js
-+++ b/node_modules/@bacons/apple-targets/build/configuration-list.js
-@@ -566,6 +566,13 @@ function createWidgetConfigurationList({ name, displayName, cwd, bundleId, deplo
-             SWIFT_OPTIMIZATION_LEVEL: "-Onone",
-             SWIFT_VERSION: "5.0",
-             TARGETED_DEVICE_FAMILY: "1,2",
-+            // PATCH: without these, Xcode infers macOS for the widget
-+            // extension and the iOS app build fails with "contains embedded
-+            // content built for macOS". Upstream emits no platform settings
-+            // for widget targets at all.
-+            SUPPORTED_PLATFORMS: "iphoneos iphonesimulator",
-+            SUPPORTS_MACCATALYST: "NO",
-+            SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO",
-         },
-         release: {
-             ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: "$accent",
-@@ -604,6 +611,13 @@ function createWidgetConfigurationList({ name, displayName, cwd, bundleId, deplo
-             SWIFT_OPTIMIZATION_LEVEL: "-O",
-             SWIFT_VERSION: "5.0",
-             TARGETED_DEVICE_FAMILY: "1,2",
-+            // PATCH: without these, Xcode infers macOS for the widget
-+            // extension and the iOS app build fails with "contains embedded
-+            // content built for macOS". Upstream emits no platform settings
-+            // for widget targets at all.
-+            SUPPORTED_PLATFORMS: "iphoneos iphonesimulator",
-+            SUPPORTS_MACCATALYST: "NO",
-+            SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO",
-         },
-     };
- }
 diff --git a/node_modules/@bacons/apple-targets/build/with-xcode-changes.js b/node_modules/@bacons/apple-targets/build/with-xcode-changes.js
-index 15a7aa2..08a89ab 100644
+index 15a7aa2..20b9318 100644
 --- a/node_modules/@bacons/apple-targets/build/with-xcode-changes.js
 +++ b/node_modules/@bacons/apple-targets/build/with-xcode-changes.js
-@@ -184,20 +184,30 @@ async function applyXcodeChanges(config, project, props) {
+@@ -184,23 +184,43 @@ async function applyXcodeChanges(config, project, props) {
          }
      }
      if (targetToUpdate) {
@@ -42,23 +10,23 @@ index 15a7aa2..08a89ab 100644
 -        targetToUpdate.props.buildConfigurationList.props.buildConfigurations.forEach((config) => {
 -            config.getReferrers().forEach((ref) => {
 -                ref.removeReference(config.uuid);
-+        // PATCH: hold the configuration list in a local before tearing it down.
-+        // The native target is one of the list's own referrers, so the
-+        // removeReference() loop below clears
-+        // targetToUpdate.props.buildConfigurationList as a side effect --
-+        // after which the original code dereferenced it and threw
-+        // "Cannot read properties of undefined (reading 'removeFromProject')".
-+        // This only triggered when the target already existed, i.e. every
-+        // prebuild over an existing native project.
++        // PATCH: update matching configurations in place. The upstream
++        // teardown clears the target's configuration-list reference and also
++        // generates fresh UUIDs on every incremental prebuild.
 +        const existingConfigurationList = targetToUpdate.props.buildConfigurationList;
-+        if (existingConfigurationList) {
-+            // Remove existing build phases. Iterate copies: removeReference
-+            // mutates the same arrays being walked.
-+            [...existingConfigurationList.props.buildConfigurations].forEach((config) => {
-+                [...config.getReferrers()].forEach((ref) => {
-+                    ref.removeReference(config.uuid);
-+                });
-+                config.removeFromProject();
++        const replacementConfigurationList = (0, configuration_list_1.createConfigurationListForType)(project, props);
++        const existingConfigurationsByName = new Map((existingConfigurationList === null || existingConfigurationList === void 0 ? void 0 : existingConfigurationList.props.buildConfigurations.map((configuration) => [configuration.props.name, configuration])) || []);
++        const canReuseConfigurationList = existingConfigurationList &&
++            existingConfigurationsByName.size ===
++                existingConfigurationList.props.buildConfigurations.length &&
++            existingConfigurationList.props.buildConfigurations.length ===
++                replacementConfigurationList.props.buildConfigurations.length &&
++            replacementConfigurationList.props.buildConfigurations.every((configuration) => existingConfigurationsByName.has(configuration.props.name));
++        if (canReuseConfigurationList) {
++            const reusedConfigurations = replacementConfigurationList.props.buildConfigurations.map((replacement) => {
++                const existing = existingConfigurationsByName.get(replacement.props.name);
++                existing.props = { ...replacement.props };
++                return existing;
              });
 -            config.removeFromProject();
 -        });
@@ -69,12 +37,64 @@ index 15a7aa2..08a89ab 100644
 -            ref.removeReference(targetToUpdate.props.buildConfigurationList.uuid);
 -        });
 -        targetToUpdate.props.buildConfigurationList.removeFromProject();
-+            // Remove existing build configuration list
-+            [...existingConfigurationList.getReferrers()].forEach((ref) => {
-+                ref.removeReference(existingConfigurationList.uuid);
-+            });
-+            existingConfigurationList.removeFromProject();
+-        // Create new build phases
+-        targetToUpdate.props.buildConfigurationList =
+-            (0, configuration_list_1.createConfigurationListForType)(project, props);
++            existingConfigurationList.props = {
++                ...replacementConfigurationList.props,
++                buildConfigurations: reusedConfigurations,
++            };
++            replacementConfigurationList.removeFromProject();
 +        }
-         // Create new build phases
-         targetToUpdate.props.buildConfigurationList =
-             (0, configuration_list_1.createConfigurationListForType)(project, props);
++        else {
++            existingConfigurationList === null || existingConfigurationList === void 0 ? void 0 : existingConfigurationList.props.buildConfigurations.forEach((configuration) => {
++                configuration.getReferrers().forEach((referrer) => {
++                    referrer.removeReference(configuration.uuid);
++                });
++                configuration.removeFromProject();
++            });
++            existingConfigurationList === null || existingConfigurationList === void 0 ? void 0 : existingConfigurationList.getReferrers().forEach((referrer) => {
++                referrer.removeReference(existingConfigurationList.uuid);
++            });
++            existingConfigurationList === null || existingConfigurationList === void 0 ? void 0 : existingConfigurationList.removeFromProject();
++            targetToUpdate.props.buildConfigurationList = replacementConfigurationList;
++        }
+     }
+     else {
+         const productType = (0, target_1.productTypeForType)(props.type);
+@@ -337,15 +357,33 @@ async function applyXcodeChanges(config, project, props) {
+     // If there's a `_shared` folder, create a PBXFileSystemSynchronizedBuildFileExceptionSet and set the `target` to the main app target. Then add exceptions to the new target's PBXFileSystemSynchronizedRootGroup's exceptions. Finally, ensure the relative paths for each file in the _shared folder are added to the `membershipExceptions` array.
+     (0, assert_1.default)(syncRootGroup instanceof xcode_1.PBXFileSystemSynchronizedRootGroup);
+     (_c = (_d = syncRootGroup.props).exceptions) !== null && _c !== void 0 ? _c : (_d.exceptions = []);
+-    const existingExceptionSet = syncRootGroup.props.exceptions.find((exception) => exception instanceof xcode_1.PBXFileSystemSynchronizedBuildFileExceptionSet &&
++    const existingExceptionSets = syncRootGroup.props.exceptions.filter((exception) => exception instanceof xcode_1.PBXFileSystemSynchronizedBuildFileExceptionSet &&
+         exception.props.target === mainAppTarget);
++    const existingExceptionSet = existingExceptionSets.shift();
++    let keptExistingExceptionSet = false;
++    syncRootGroup.props.exceptions = syncRootGroup.props.exceptions.filter((exception) => {
++        if (!(exception instanceof xcode_1.PBXFileSystemSynchronizedBuildFileExceptionSet) ||
++            exception.props.target !== mainAppTarget) {
++            return true;
++        }
++        if (!keptExistingExceptionSet) {
++            keptExistingExceptionSet = true;
++            return true;
++        }
++        return false;
++    });
++    existingExceptionSets
++        .filter((duplicate) => duplicate !== existingExceptionSet)
++        .forEach((duplicate) => duplicate.removeFromProject());
+     if (sharedAssets.length) {
+         const exceptionSet = existingExceptionSet ||
+             xcode_1.PBXFileSystemSynchronizedBuildFileExceptionSet.create(project, {
+                 target: mainAppTarget,
+             });
+         exceptionSet.props.membershipExceptions = sharedAssets.sort();
+-        syncRootGroup.props.exceptions.push(exceptionSet);
++        if (!existingExceptionSet) {
++            syncRootGroup.props.exceptions.push(exceptionSet);
++        }
+     }
+     else {
+         // Remove the exception set if there are no shared assets.

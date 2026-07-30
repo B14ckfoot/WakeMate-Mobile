@@ -1,7 +1,24 @@
-const { createRunOncePlugin, withXcodeProject } = require('@expo/config-plugins');
+const {
+  createRunOncePlugin,
+  withAppDelegate,
+  withXcodeProject,
+} = require('@expo/config-plugins');
 
-const pluginName = 'with-quoted-react-native-bundle-script';
+const pluginName = 'with-physical-device-debug-bundle';
 const pluginVersion = '1.0.0';
+
+const DEFAULT_DEBUG_BUNDLE_URL = `#if DEBUG
+    return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: ".expo/.virtual-metro-entry")
+#else`;
+
+const DEVICE_DEBUG_BUNDLE_URL = `#if DEBUG
+    #if targetEnvironment(simulator)
+      return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: ".expo/.virtual-metro-entry")
+    #else
+      return Bundle.main.url(forResource: "main", withExtension: "jsbundle")
+        ?? RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: ".expo/.virtual-metro-entry")
+    #endif
+#else`;
 
 const FIXED_BUNDLE_SCRIPT = `if [[ -f "$PODS_ROOT/../.xcode.env" ]]; then
   source "$PODS_ROOT/../.xcode.env"
@@ -52,33 +69,71 @@ export RN_XCODE_SCRIPT_PATH="$("$NODE_BINARY" --print "require('path').dirname(r
 
 `;
 
-const withQuotedReactNativeBundleScript = (config) =>
-  withXcodeProject(config, (configWithProject) => {
+const withPhysicalDeviceDebugBundle = (config) => {
+  config = withAppDelegate(config, (configWithAppDelegate) => {
+    if (configWithAppDelegate.modResults.language !== 'swift') {
+      throw new Error('withPhysicalDeviceDebugBundle: expected a Swift AppDelegate');
+    }
+
+    const { contents } = configWithAppDelegate.modResults;
+    if (contents.includes(DEVICE_DEBUG_BUNDLE_URL)) {
+      return configWithAppDelegate;
+    }
+    if (!contents.includes(DEFAULT_DEBUG_BUNDLE_URL)) {
+      throw new Error(
+        'withPhysicalDeviceDebugBundle: could not find the generated bundleURL implementation'
+      );
+    }
+
+    configWithAppDelegate.modResults.contents = contents.replace(
+      DEFAULT_DEBUG_BUNDLE_URL,
+      DEVICE_DEBUG_BUNDLE_URL
+    );
+    return configWithAppDelegate;
+  });
+
+  return withXcodeProject(config, (configWithProject) => {
     // React Native's Xcode bundling script writes build artifacts like ip.txt
     // into the built app during device debug builds, which is blocked when
     // user script sandboxing is enabled.
-    configWithProject.modResults.updateBuildProperty('ENABLE_USER_SCRIPT_SANDBOXING', 'NO');
+    configWithProject.modResults.updateBuildProperty(
+      'ENABLE_USER_SCRIPT_SANDBOXING',
+      'NO'
+    );
 
-    const shellPhases = configWithProject.modResults.hash.project.objects.PBXShellScriptBuildPhase ?? {};
+    const shellPhases =
+      configWithProject.modResults.hash.project.objects
+        .PBXShellScriptBuildPhase ?? {};
+    let updatedBundlePhase = false;
 
     for (const [key, phase] of Object.entries(shellPhases)) {
       if (key.endsWith('_comment') || !phase) {
         continue;
       }
 
-      const phaseName = typeof phase.name === 'string' ? phase.name.replaceAll('"', '') : '';
+      const phaseName =
+        typeof phase.name === 'string' ? phase.name.replaceAll('"', '') : '';
       if (phaseName !== 'Bundle React Native code and images') {
         continue;
       }
 
       phase.shellScript = JSON.stringify(FIXED_BUNDLE_SCRIPT);
+      updatedBundlePhase = true;
+      break;
+    }
+
+    if (!updatedBundlePhase) {
+      throw new Error(
+        'withPhysicalDeviceDebugBundle: could not find the React Native bundle phase'
+      );
     }
 
     return configWithProject;
   });
+};
 
 module.exports = createRunOncePlugin(
-  withQuotedReactNativeBundleScript,
+  withPhysicalDeviceDebugBundle,
   pluginName,
   pluginVersion
 );

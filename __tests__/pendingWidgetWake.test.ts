@@ -58,9 +58,18 @@ it.each([
 });
 
 it('survives a storage read that throws', () => {
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
   storageInstance.get.mockImplementation(() => {
     throw new Error('app group unavailable');
   });
 
-  expect(consumePendingWidgetWake()).toBeNull();
+  try {
+    expect(consumePendingWidgetWake()).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      'Failed to read the pending widget wake:',
+      expect.any(Error)
+    );
+  } finally {
+    warn.mockRestore();
+  }
 });

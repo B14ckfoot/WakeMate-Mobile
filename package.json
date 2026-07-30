@@ -4,14 +4,15 @@
   "version": "1.0.0",
   "scripts": {
     "start": "npx expo start",
-    "reset-project": "node ./scripts/reset-project.js",
     "android": "npx expo start --android",
     "ios": "npx expo start --ios",
     "web": "npx expo start --web",
     "postinstall": "patch-package",
     "test": "jest --watchAll",
-    "test:ci": "jest --ci",
-    "lint": "npx expo lint"
+    "test:ci": "jest --ci --watchman=false",
+    "lint": "npx expo lint",
+    "typecheck": "tsc --noEmit",
+    "verify:ios": "node scripts/verify-ios-project.js"
   },
   "jest": {
     "preset": "jest-expo",
@@ -20,7 +21,7 @@
     ]
   },
   "dependencies": {
-    "@bacons/apple-targets": "^4.0.6",
+    "@bacons/apple-targets": "4.0.6",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.3.10",
@@ -70,6 +71,5 @@
     "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   },
-  "private": true,
-  "packageManager": "yarn@4.2.2+sha512.c44e283c54e02de9d1da8687025b030078c1b9648d2895a65aab8e64225bfb7becba87e1809fc0b4b6778bbd47a1e2ab6ac647de4c5e383a53a7c17db6c3ff4b"
+  "private": true
 }

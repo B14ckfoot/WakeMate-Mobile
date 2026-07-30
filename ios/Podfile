@@ -59,6 +59,44 @@ target 'WakeMATE' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+    # @generated begin wakemate-pod-build-settings - expo prebuild (DO NOT MODIFY) sync-d17d25f85a84193ba7ac30d28595610aa2df7660
+    minimum_ios_version = Gem::Version.new(
+      podfile_properties['ios.deploymentTarget'] || '15.1'
+    )
+
+    installer.pods_project.targets.each do |pod_target|
+      pod_target.build_configurations.each do |build_configuration|
+        settings = build_configuration.build_settings
+        declared_version = settings['IPHONEOS_DEPLOYMENT_TARGET']
+
+        if declared_version &&
+           Gem::Version.correct?(declared_version) &&
+           Gem::Version.new(declared_version) < minimum_ios_version
+          settings['IPHONEOS_DEPLOYMENT_TARGET'] = minimum_ios_version.to_s
+        end
+
+        wakemate_owned = pod_target.name.start_with?('Wakemate')
+        if wakemate_owned
+          swift_flags = settings['OTHER_SWIFT_FLAGS'] || '$(inherited)'
+          swift_flags = swift_flags.join(' ') if swift_flags.is_a?(Array)
+          unless swift_flags.include?('-Wno-nullability-completeness')
+            settings['OTHER_SWIFT_FLAGS'] =
+              "#{swift_flags} -Xcc -Wno-nullability-completeness"
+          end
+          next
+        end
+
+        settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+        settings['SWIFT_SUPPRESS_WARNINGS'] = 'YES'
+        libtool_flags = settings['OTHER_LIBTOOLFLAGS'] || '$(inherited)'
+        libtool_flags = libtool_flags.join(' ') if libtool_flags.is_a?(Array)
+        unless libtool_flags.include?('-no_warning_for_no_symbols')
+          settings['OTHER_LIBTOOLFLAGS'] =
+            "#{libtool_flags} -no_warning_for_no_symbols"
+        end
+      end
+    end
+    # @generated end wakemate-pod-build-settings
   end
 end
 
