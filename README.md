@@ -136,7 +136,7 @@ For remote control features to work:
 
 1. Install and start the desktop companion on the target computer (Windows tray app).
 2. On the desktop, click the WakeMATE tray icon and choose **View Pairing QR Code**.
-3. In the mobile app, scan that QR code — either from **Add device → Scan QR** (saves the computer and pairs in one scan) or from **Settings** via the camera button next to the pairing-token field. The QR (pairing contract v2) carries the device name, IP, legacy port, TLS port, MAC, token, and certificate fingerprint.
+3. In the mobile app, tap **Scan QR Code** on the Devices screen and scan it. The app saves the computer and pairs it in the same scan. The QR (pairing contract v2) carries the device name, ports, token, certificate fingerprint, and the IP/MAC when the companion can detect them.
 4. Approve the pairing dialog that appears **on the desktop**. The app polls the companion and shows the real outcome (approved, denied, or still waiting).
 5. Add or discover any additional devices inside the app.
 
@@ -145,7 +145,7 @@ Notes:
 - Do **not** try to copy `api_token` out of `wakemate.config.json` — on a healthy install the companion stores the token in the OS credential store and that file's `api_token` field is intentionally empty. Scanning the QR is the supported path.
 - The mobile pairing token is stored with Expo SecureStore (Android Keystore / iOS Keychain accessibility), not AsyncStorage. Existing plaintext tokens are migrated on first read by writing the secure copy before deleting the old value.
 - A current pairing QR establishes pinned HTTPS before the token is sent. The exact self-signed leaf-certificate SHA-256 fingerprint is checked by the local Android/iOS module; incomplete TLS metadata is rejected instead of falling back to HTTP.
-- Companions older than protocol v2 show a bare-token QR that only the **Settings** scanner can read, and they lack the `/v1/pairing/status` endpoint (the app then falls back to the older optimistic pairing behavior).
+- Companions older than protocol v2 show an unidentifiable bare-token QR. Update the desktop companion and regenerate its QR code before pairing; the app will not guess which saved computer owns a bare token.
 - Legacy/manual connections without a trusted QR fingerprint continue over HTTP only during the companion's migration window. Re-scan the current QR to move a saved connection to HTTPS.
 - Background and findings: see `WAKE_MATE_COMPANION_ARCHITECTURE_AUDIT.md` in the parent folder.
 
@@ -156,7 +156,7 @@ Without the companion server, you can still work on the UI, but remote input and
 - If dependencies act strange after pulling fresh changes, delete `node_modules` and run `npm install` again.
 - If iOS will not boot from Expo alone, run `npx expo run:ios` once to generate the native build.
 - After pulling native dependency or pinning-module changes, rebuild the native app (`npx expo run:ios` or `npx expo run:android`); restarting Metro alone is not enough.
-- If device controls fail, make sure the companion IP and token in Settings match the target computer.
+- If device controls report a pairing problem, re-scan that computer’s pairing QR code from the Devices screen.
 
 ## Project Structure
 

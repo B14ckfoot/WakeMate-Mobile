@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,24 +12,20 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import Constants from 'expo-constants';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import {
   ArrowLeft,
-  Camera,
   Edit,
   Info,
   RefreshCw,
   Save,
-  Server,
   Trash,
   Wifi,
-  WifiOff,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
-import { useServer } from '../context/ServerContext';
 import {
   DEFAULT_WAKE_PORT,
   getSuggestedWakeAddress,
@@ -38,8 +34,8 @@ import {
   normalizeMacAddress,
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
-import { getThisPhoneDisplayName } from '../utils/deviceIdentity';
-import { parsePairingQrConnection } from '../utils/pairingQr';
+
+const appVersion = Constants.expoConfig?.version ?? '1.1.0';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -47,30 +43,12 @@ export default function SettingsScreen() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
-  const [serverIpInput, setServerIpInput] = useState('');
-  const [serverTokenInput, setServerTokenInput] = useState('');
   const [editName, setEditName] = useState('');
   const [editMac, setEditMac] = useState('');
   const [editIp, setEditIp] = useState('');
   const [editWakeAddress, setEditWakeAddress] = useState('');
   const [editWakePort, setEditWakePort] = useState(String(DEFAULT_WAKE_PORT));
   const [modalVisible, setModalVisible] = useState(false);
-  const [scannerVisible, setScannerVisible] = useState(false);
-  const [scannerError, setScannerError] = useState<string | null>(null);
-  const [tokenScanNotice, setTokenScanNotice] = useState<string | null>(null);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const tokenScanLockedRef = useRef(false);
-
-  const {
-    serverIp,
-    setServerIp,
-    serverToken,
-    setServerToken,
-    isConnected,
-    connectionError,
-    testConnection,
-    refreshFromStorage,
-  } = useServer();
 
   const loadData = useCallback(async () => {
     try {
@@ -85,128 +63,11 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    setServerIpInput(serverIp);
-    setServerTokenInput(serverToken);
-  }, [serverIp, serverToken]);
-
   useFocusEffect(
     useCallback(() => {
       loadData();
-      // Pull in any connection the device-QR pairing screen saved while this
-      // screen was not focused, so the IP/token fields show the scanned
-      // values instead of appearing empty.
-      refreshFromStorage();
-    }, [loadData, refreshFromStorage])
+    }, [loadData])
   );
-
-  const persistConnectionSettings = useCallback(async (nextServerIp: string, nextServerToken: string) => {
-    await Promise.all([
-      deviceService.setServerAddress(nextServerIp),
-      deviceService.setServerToken(nextServerToken),
-    ]);
-
-    setServerIp(nextServerIp);
-    setServerToken(nextServerToken);
-  }, [setServerIp, setServerToken]);
-
-  const pairAndEnableRemoteControls = useCallback(async (
-    nextServerIp: string,
-    nextServerToken: string
-  ): Promise<'approved' | 'denied' | 'timeout' | 'unreachable'> => {
-    await persistConnectionSettings(nextServerIp, nextServerToken);
-
-    const connected = await testConnection(nextServerIp, nextServerToken);
-    if (!connected) {
-      return 'unreachable';
-    }
-
-    // Protocol v3: exchange the scanned QR token for this phone's own
-    // token, so this phone can later be revoked individually from the
-    // companion tray. Older companions fall back to the shared token.
-    const enrollment = await deviceService.enrollDevice(
-      nextServerIp,
-      getThisPhoneDisplayName()
-    );
-
-    if (enrollment) {
-      const approval = await deviceService.waitForPairingApproval(nextServerIp, {
-        deviceId: enrollment.deviceId,
-      });
-
-      if (approval === 'approved') {
-        await persistConnectionSettings(nextServerIp, enrollment.deviceToken);
-        await testConnection(nextServerIp, enrollment.deviceToken);
-        return 'approved';
-      }
-
-      await testConnection(nextServerIp, nextServerToken);
-      return approval === 'unsupported' ? 'approved' : approval;
-    }
-
-    await deviceService.activatePairedControls(nextServerIp, nextServerToken);
-
-    // The companion returns "pending_approval" and shows a dialog on the
-    // desktop; wait for the actual Yes/No instead of assuming success.
-    const approval = await deviceService.waitForPairingApproval(nextServerIp);
-    await testConnection(nextServerIp, nextServerToken);
-
-    // Older companions have no status endpoint; keep the legacy optimistic
-    // behavior for them rather than reporting a false failure.
-    if (approval === 'unsupported') {
-      return 'approved';
-    }
-
-    return approval;
-  }, [persistConnectionSettings, testConnection]);
-
-  const handleUpdateServerConnection = async () => {
-    const nextServerIp = serverIpInput.trim();
-    const nextServerToken = serverTokenInput.trim();
-
-    if (!nextServerIp) {
-      Alert.alert('Error', 'Please enter a valid server IP');
-      return;
-    }
-
-    if (!isValidIpAddress(nextServerIp)) {
-      Alert.alert('Error', 'Please enter a valid IP address (for example 192.168.1.100)');
-      return;
-    }
-
-    try {
-      if (nextServerToken) {
-        const result = await pairAndEnableRemoteControls(nextServerIp, nextServerToken);
-
-        if (result === 'approved') {
-          Alert.alert('Success', 'Connected to the WakeMATE companion and enabled remote controls for this computer.');
-        } else if (result === 'denied') {
-          Alert.alert(
-            'Pairing Denied',
-            'The pairing request was denied on the computer. If that was you, start over and click Yes on the WakeMATE dialog.'
-          );
-        } else if (result === 'timeout') {
-          Alert.alert(
-            'Waiting for Approval',
-            'The companion is still waiting for someone to approve the pairing dialog on the computer. Approve it there, then tap "Save and Test" again.'
-          );
-        }
-        // 'unreachable': testConnection already surfaced the error state.
-        return;
-      }
-
-      await persistConnectionSettings(nextServerIp, nextServerToken);
-
-      const connected = await testConnection(nextServerIp, nextServerToken);
-      if (connected) {
-        Alert.alert('Connected', 'The companion is reachable. Add the pairing token to enable commands.');
-      }
-    } catch (error) {
-      console.error('Error updating companion connection:', error);
-      const message = error instanceof Error ? error.message : 'Failed to connect to the WakeMATE companion.';
-      Alert.alert('Connection Error', message);
-    }
-  };
 
   const handleEditDevice = (device: Device) => {
     setEditingDevice(device);
@@ -222,131 +83,6 @@ export default function SettingsScreen() {
     setModalVisible(false);
     setEditingDevice(null);
   };
-
-  const closeTokenScanner = useCallback(() => {
-    tokenScanLockedRef.current = false;
-    setScannerError(null);
-    setScannerVisible(false);
-  }, []);
-
-  const handleOpenTokenScanner = useCallback(async () => {
-    tokenScanLockedRef.current = false;
-    setScannerError(null);
-    setTokenScanNotice(null);
-
-    try {
-      if (!cameraPermission?.granted) {
-        const permissionResponse = await requestCameraPermission();
-        if (!permissionResponse.granted) {
-          Alert.alert(
-            'Camera Access Needed',
-            permissionResponse.canAskAgain
-              ? 'Allow camera access to scan the WakeMATE pairing token QR code.'
-              : 'Camera access is disabled for WakeMATE. Enable it in your device settings to scan the pairing token.'
-          );
-          return;
-        }
-      }
-
-      setScannerVisible(true);
-    } catch (error) {
-      console.error('Error requesting camera permission:', error);
-      Alert.alert('Scanner Unavailable', 'Camera access could not be started right now.');
-    }
-  }, [cameraPermission?.granted, requestCameraPermission]);
-
-  const handleTokenQrScanned = useCallback(
-    async ({ data }: { data: string }) => {
-      if (tokenScanLockedRef.current) {
-        return;
-      }
-
-      tokenScanLockedRef.current = true;
-
-      const pairingQr = parsePairingQrConnection(data);
-      const token = pairingQr.token;
-      if (!token) {
-        Alert.alert(
-          'Unsupported QR Code',
-          'Scan a QR code that contains the raw pairing token, api_token=..., JSON with api_token, or a WakeMATE pairing link.'
-        );
-        tokenScanLockedRef.current = false;
-        return;
-      }
-
-      if (!pairingQr.hasValidTlsMetadata) {
-        Alert.alert(
-          'Invalid Secure Pairing Code',
-          'This QR code advertises secure transport but is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.'
-        );
-        tokenScanLockedRef.current = false;
-        return;
-      }
-
-      setServerTokenInput(token);
-      setScannerVisible(false);
-      setScannerError(null);
-
-      let nextServerIp = pairingQr.ip ?? serverIpInput.trim();
-      if (pairingQr.ip) {
-        setServerIpInput(pairingQr.ip);
-      }
-
-      if (!isValidIpAddress(nextServerIp)) {
-        try {
-          const discoveredServerIp = await deviceService.discoverCompanionServer();
-          if (discoveredServerIp && isValidIpAddress(discoveredServerIp)) {
-            nextServerIp = discoveredServerIp;
-            setServerIpInput(discoveredServerIp);
-          }
-        } catch (error) {
-          console.error('Error discovering companion during QR pairing:', error);
-        }
-      }
-
-      if (!isValidIpAddress(nextServerIp)) {
-        setTokenScanNotice('Pairing token scanned. Add or confirm the companion IP to finish enabling remote controls automatically.');
-        return;
-      }
-
-      try {
-        if (pairingQr.tlsFingerprint && pairingQr.tlsPort) {
-          await deviceService.setServerConnection(nextServerIp, pairingQr.tlsPort);
-          await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
-        } else if (pairingQr.apiPort) {
-          await deviceService.setServerConnection(nextServerIp, pairingQr.apiPort);
-        }
-
-        setTokenScanNotice('Pairing token scanned. Approve the pairing dialog on your computer to finish...');
-        const result = await pairAndEnableRemoteControls(nextServerIp, token);
-
-        if (result === 'approved') {
-          setTokenScanNotice(null);
-          tokenScanLockedRef.current = false;
-          router.back();
-          return;
-        }
-
-        if (result === 'denied') {
-          setTokenScanNotice('The pairing request was denied on the computer. Scan again and click Yes on the WakeMATE dialog to enable remote controls.');
-        } else if (result === 'timeout') {
-          setTokenScanNotice('Still waiting for approval on the computer. Approve the WakeMATE dialog there, then tap "Save and Test".');
-        } else {
-          setTokenScanNotice('Pairing token scanned, but the companion could not be reached yet. Check the saved IP and try again.');
-        }
-      } catch (error) {
-        console.error('Error enabling paired controls after QR scan:', error);
-        const message = error instanceof Error
-          ? error.message
-          : 'The token was saved, but remote controls could not be enabled automatically.';
-        setTokenScanNotice('Pairing token scanned, but remote controls could not be enabled automatically.');
-        Alert.alert('Pairing Incomplete', message);
-      }
-
-      setScannerError(null);
-    },
-    [pairAndEnableRemoteControls, router, serverIpInput]
-  );
 
   const handleSaveEdit = async () => {
     if (!editingDevice) {
@@ -497,69 +233,6 @@ export default function SettingsScreen() {
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
-              <Server size={20} color="#0891b2" />
-              <Text style={styles.sectionTitle}>Companion Connection</Text>
-            </View>
-
-            <View style={styles.serverStatus}>
-              {isConnected ? (
-                <View style={styles.statusRow}>
-                  <Wifi size={18} color="#4ade80" />
-                  <Text style={styles.connectedText}>Connected</Text>
-                </View>
-              ) : (
-                <View style={styles.statusRow}>
-                  <WifiOff size={18} color="#ef4444" />
-                  <Text style={styles.disconnectedText}>Disconnected</Text>
-                </View>
-              )}
-
-              <TouchableOpacity style={styles.refreshButton} onPress={() => testConnection(serverIpInput.trim(), serverTokenInput.trim())}>
-                <RefreshCw size={18} color="#0891b2" />
-              </TouchableOpacity>
-            </View>
-
-            {connectionError ? (
-              <Text style={isConnected ? styles.infoText : styles.errorText}>{connectionError}</Text>
-            ) : null}
-
-            <Text style={styles.inputLabel}>Server IP</Text>
-            <TextInput
-              style={styles.input}
-              value={serverIpInput}
-              onChangeText={setServerIpInput}
-              placeholder="192.168.1.100"
-              placeholderTextColor="#6b7280"
-              keyboardType="decimal-pad"
-              autoCorrect={false}
-            />
-
-            <Text style={styles.inputLabel}>Pairing Token</Text>
-            <TextInput
-              style={styles.input}
-              value={serverTokenInput}
-              onChangeText={setServerTokenInput}
-              placeholder="Scan the QR from the WakeMATE tray"
-              placeholderTextColor="#6b7280"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <TouchableOpacity style={styles.tokenScanButton} onPress={handleOpenTokenScanner}>
-              <Camera size={16} color="#67e8f9" />
-              <Text style={styles.tokenScanButtonText}>Scan QR Code</Text>
-            </TouchableOpacity>
-            <Text style={styles.helpText}>
-              On your computer, click the WakeMATE tray icon and choose &quot;View Pairing QR Code&quot;, then scan it here. Pasting a token manually also works.
-            </Text>
-            {tokenScanNotice ? <Text style={styles.infoText}>{tokenScanNotice}</Text> : null}
-
-            <TouchableOpacity style={styles.primaryButton} onPress={handleUpdateServerConnection}>
-              <Text style={styles.primaryButtonText}>Save and Test</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
               <Wifi size={20} color="#0891b2" />
               <Text style={styles.sectionTitle}>Saved Devices</Text>
             </View>
@@ -607,7 +280,7 @@ export default function SettingsScreen() {
 
             <View style={styles.aboutInfo}>
               <Text style={styles.appName}>WakeMATE Mobile</Text>
-              <Text style={styles.appVersion}>Version 1.0.0</Text>
+              <Text style={styles.appVersion}>Version {appVersion}</Text>
               <Text style={styles.appDescription}>
                 Mobile companion for the WakeMATE desktop service, built to wake and control your computers remotely.
               </Text>
@@ -712,61 +385,6 @@ export default function SettingsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-
-      <Modal visible={scannerVisible} animationType="slide" onRequestClose={closeTokenScanner}>
-        <View style={styles.scannerModal}>
-          <View
-            style={[
-              styles.scannerHeader,
-              {
-                paddingTop: insets.top + 12,
-              },
-            ]}
-          >
-            <TouchableOpacity style={styles.headerButton} onPress={closeTokenScanner}>
-              <ArrowLeft size={22} color="#ffffff" />
-            </TouchableOpacity>
-            <Text style={styles.scannerTitle}>Scan Pairing Token</Text>
-            <View style={styles.scannerHeaderSpacer} />
-          </View>
-
-          <View style={styles.scannerCameraShell}>
-            <CameraView
-              style={styles.scannerCamera}
-              facing="back"
-              barcodeScannerSettings={{
-                barcodeTypes: ['qr'],
-              }}
-              onBarcodeScanned={handleTokenQrScanned}
-              onMountError={(event) => setScannerError(event.message)}
-            />
-            <View pointerEvents="none" style={styles.scannerOverlay}>
-              <View style={styles.scannerFrame} />
-            </View>
-          </View>
-
-          <View
-            style={[
-              styles.scannerFooter,
-              {
-                paddingBottom: insets.bottom + 24,
-              },
-            ]}
-          >
-            <Text style={styles.scannerDescription}>
-              Point the camera at a QR code with your WakeMATE pairing token.
-            </Text>
-            <Text style={styles.scannerSubtext}>
-              Raw token, `api_token=...`, JSON, and `wakemate://pair?token=...` all work.
-            </Text>
-            {scannerError ? <Text style={styles.scannerError}>{scannerError}</Text> : null}
-
-            <TouchableOpacity style={styles.cancelButton} onPress={closeTokenScanner}>
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -848,46 +466,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginLeft: 8,
   },
-  serverStatus: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#0f171c',
-    borderWidth: 1,
-    borderColor: '#17323b',
-    padding: 12,
-    borderRadius: 14,
-    marginBottom: 12,
-  },
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  connectedText: {
-    color: '#4ade80',
-    marginLeft: 8,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  disconnectedText: {
-    color: '#ef4444',
-    marginLeft: 8,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  refreshButton: {
-    padding: 6,
-  },
-  errorText: {
-    color: '#fca5a5',
-    marginBottom: 12,
-    lineHeight: 20,
-  },
-  infoText: {
-    color: '#67e8f9',
-    marginBottom: 12,
-    lineHeight: 20,
-  },
   inputLabel: {
     color: '#f8fbff',
     fontSize: 14,
@@ -905,41 +483,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#17323b',
   },
-  tokenScanButton: {
-    marginTop: 10,
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#0f171c',
-    borderWidth: 1,
-    borderColor: '#17323b',
-    borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  tokenScanButtonText: {
-    color: '#d8fbff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
   helpText: {
     color: '#7f97a1',
     fontSize: 12,
     marginTop: 8,
     lineHeight: 18,
-  },
-  primaryButton: {
-    marginTop: 18,
-    backgroundColor: '#0891b2',
-    paddingVertical: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  primaryButtonText: {
-    color: '#ffffff',
-    fontWeight: '700',
-    fontSize: 15,
   },
   deviceItem: {
     backgroundColor: '#0f171c',
@@ -1025,67 +573,6 @@ const styles = StyleSheet.create({
   },
   modalShell: {
     maxHeight: '92%',
-  },
-  scannerModal: {
-    flex: 1,
-    backgroundColor: '#05090c',
-  },
-  scannerHeader: {
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  scannerHeaderSpacer: {
-    width: 42,
-  },
-  scannerTitle: {
-    color: '#f8fbff',
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  scannerCameraShell: {
-    flex: 1,
-    marginHorizontal: 16,
-    marginTop: 20,
-    borderRadius: 28,
-    overflow: 'hidden',
-    backgroundColor: '#000000',
-  },
-  scannerCamera: {
-    flex: 1,
-  },
-  scannerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  scannerFrame: {
-    width: '72%',
-    aspectRatio: 1,
-    borderRadius: 28,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.92)',
-    backgroundColor: 'transparent',
-  },
-  scannerFooter: {
-    paddingHorizontal: 16,
-    paddingTop: 20,
-    gap: 10,
-  },
-  scannerDescription: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  scannerSubtext: {
-    color: '#8aa1ab',
-    fontSize: 13,
-    lineHeight: 20,
-  },
-  scannerError: {
-    color: '#fca5a5',
-    lineHeight: 20,
   },
   modalContent: {
     backgroundColor: '#0b1217',

@@ -417,10 +417,6 @@ export default function DeviceControlScreen() {
       setDevice(foundDevice);
       setStatus(foundDevice.status);
 
-      if (showLoader) {
-        setLoading(false);
-      }
-
       // Scoped to this computer: with several paired PCs, the global pairing
       // state says nothing about whether *this* one is reachable.
       const [companionSetupError, isOnline] = await Promise.all([
@@ -1195,7 +1191,7 @@ export default function DeviceControlScreen() {
       case 'unauthorized':
         return {
           title: 'Pairing required',
-          message: 'This phone is not paired with the computer. Re-scan the pairing QR code in Settings.',
+          message: 'This phone is not paired with the computer. Re-scan its pairing QR code from the Devices screen.',
           tone: 'warning',
           alert: true,
         };
@@ -1987,10 +1983,10 @@ export default function DeviceControlScreen() {
 
                 <TouchableOpacity
                   style={styles.primaryAction}
-                  onPress={() => (deviceIsOnline ? router.push('/settings') : router.replace(`/devices/${device.id}`))}
+                  onPress={() => (deviceIsOnline ? router.push('/devices/scan-qr') : router.replace(`/devices/${device.id}`))}
                 >
                   <Text style={styles.primaryActionText}>
-                    {deviceIsOnline ? 'Open Settings' : 'Back to Device'}
+                    {deviceIsOnline ? 'Scan QR Code' : 'Back to Device'}
                   </Text>
                 </TouchableOpacity>
               </View>

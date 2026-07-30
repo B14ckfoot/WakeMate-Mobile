@@ -5,7 +5,6 @@ import { ArrowLeft } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import deviceService from '../services/deviceService';
-import { useServer } from '../../src/context/ServerContext';
 import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
 import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
 import { parsePairingQrConnection } from '../../src/utils/pairingQr';
@@ -13,7 +12,6 @@ import { parsePairingQrConnection } from '../../src/utils/pairingQr';
 export default function ScanDeviceQrScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { refreshFromStorage } = useServer();
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [isProcessing, setIsProcessing] = useState(false);
   const scanLockedRef = useRef(false);
@@ -32,22 +30,32 @@ export default function ScanDeviceQrScreen() {
 
       scanLockedRef.current = true;
 
-      let parsed: unknown;
+      let parsed: unknown = null;
       try {
         parsed = JSON.parse(data);
       } catch {
-        Alert.alert(
-          'Unsupported QR Code',
-          "This doesn't look like a WakeMATE device QR code. Make sure you're scanning the code shown by the companion app.",
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
-        return;
+        // Bare-token and unrelated QR codes are rejected below because they
+        // carry no trustworthy computer identity.
       }
 
       // Pairing QR v2 carries the token and transport metadata, so one scan
       // can save the device and establish a pinned HTTPS connection.
       const pairingQr = parsePairingQrConnection(data);
       const pairingToken = pairingQr.token;
+      const qrRecord =
+        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+
+      if (!qrRecord) {
+        Alert.alert(
+          'Unsupported Pairing Code',
+          'Scan the current device QR code from the WakeMATE companion. If the companion shows a bare token instead, update it and regenerate the QR code.',
+          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
+        );
+        return;
+      }
+
       if (!pairingQr.hasValidTlsMetadata) {
         Alert.alert(
           'Invalid Secure Pairing Code',
@@ -56,50 +64,96 @@ export default function ScanDeviceQrScreen() {
         );
         return;
       }
-      const connectionPort =
-        pairingQr.tlsFingerprint && pairingQr.tlsPort
-          ? pairingQr.tlsPort
-          : pairingQr.apiPort;
+      const qrDeviceName =
+        typeof qrRecord?.name === 'string' ? qrRecord.name.trim() : '';
 
-      const fields = extractCompanionFields(parsed, '');
-      const scannedDevice = buildScannedDevice(fields);
+      let resolvedApiPort = pairingQr.apiPort;
+      const resolvedTlsPort = pairingQr.tlsPort;
+      const resolvedTlsFingerprint = pairingQr.tlsFingerprint;
+      let fields = extractCompanionFields(parsed ?? {}, pairingQr.ip ?? '');
+      let scannedDevice = buildScannedDevice(fields);
+
+      if (!scannedDevice && pairingToken) {
+        // The companion deliberately omits IP/MAC when the OS cannot identify
+        // its primary adapter. Recover those fields through LAN discovery so
+        // this scan remains the only pairing step.
+        setIsProcessing(true);
+        try {
+          const discoveries = await deviceService.discoverCompanions();
+          const matchingIp = pairingQr.ip
+            ? discoveries.find((entry) => entry.serverIp === pairingQr.ip)
+            : null;
+          const matchingMac = fields.mac
+            ? discoveries.find((entry) => entry.macAddress === fields.mac)
+            : null;
+          const matchingNames = qrDeviceName
+            ? discoveries.filter(
+                (entry) =>
+                  entry.deviceName.localeCompare(qrDeviceName, undefined, {
+                    sensitivity: 'base',
+                  }) === 0
+              )
+            : [];
+          const discoveredCompanion =
+            matchingIp ??
+            (!pairingQr.ip ? matchingMac : null) ??
+            (!pairingQr.ip && !matchingMac && matchingNames.length === 1
+              ? matchingNames[0]
+              : null);
+
+          if (discoveredCompanion) {
+            if (
+              fields.mac &&
+              discoveredCompanion.macAddress &&
+              discoveredCompanion.macAddress !== fields.mac
+            ) {
+              Alert.alert(
+                'Pairing Code Does Not Match',
+                'The computer found on the network has a different MAC address from the scanned QR code. Regenerate the code on the computer you want to add.',
+                [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
+              );
+              return;
+            }
+
+            if (
+              pairingQr.tlsFingerprint &&
+              discoveredCompanion.tlsFingerprint &&
+              discoveredCompanion.tlsFingerprint !== pairingQr.tlsFingerprint
+            ) {
+              Alert.alert(
+                'Secure Pairing Mismatch',
+                'The computer found on the network advertises a different certificate from the scanned QR code. Regenerate the code before pairing.',
+                [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
+              );
+              return;
+            }
+
+            fields = {
+              name: qrDeviceName || discoveredCompanion.deviceName,
+              pingIp: pairingQr.ip ?? discoveredCompanion.serverIp,
+              mac: fields.mac || discoveredCompanion.macAddress || '',
+              wakeAddress:
+                discoveredCompanion.wakeAddress ||
+                fields.wakeAddress ||
+                discoveredCompanion.serverIp,
+              wakePort: discoveredCompanion.wakePort ?? fields.wakePort,
+              platform: discoveredCompanion.platform ?? fields.platform,
+            };
+            scannedDevice = buildScannedDevice(fields);
+            resolvedApiPort =
+              resolvedApiPort ?? discoveredCompanion.apiPort;
+          }
+        } catch (error) {
+          console.error('Error discovering companion during QR pairing:', error);
+        } finally {
+          setIsProcessing(false);
+        }
+      }
 
       if (!scannedDevice) {
-        if (pairingToken) {
-          // The QR code may omit the companion IP (e.g. the desktop could
-          // not detect its own address); fall back to network discovery so
-          // the user is not sent to Settings to type it by hand.
-          let serverIp = pairingQr.ip;
-          if (!serverIp) {
-            setIsProcessing(true);
-            try {
-              serverIp = await deviceService.discoverCompanionServer();
-            } catch (error) {
-              console.error('Error discovering companion during QR pairing:', error);
-            } finally {
-              setIsProcessing(false);
-            }
-          }
-
-          if (serverIp) {
-            await deviceService.setServerConnection(serverIp, connectionPort);
-            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
-          }
-          await deviceService.setServerToken(pairingToken);
-          await refreshFromStorage();
-          Alert.alert(
-            'Pairing Token Saved',
-            serverIp
-              ? `The companion was found at ${serverIp}. Open Settings and tap "Save and Test" to finish pairing.`
-              : 'This QR code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
-            [{ text: 'OK', onPress: () => router.back() }]
-          );
-          return;
-        }
-
         Alert.alert(
           'Incomplete Device Info',
-          "This QR code is missing required details (device name, MAC address, or IP address). Ask the companion app to regenerate its QR code.",
+          'WakeMATE could not identify both the computer IP and MAC address. Make sure the phone and computer are on the same network, regenerate the QR code from the companion, and scan it again.',
           [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
         );
         return;
@@ -130,9 +184,9 @@ export default function ScanDeviceQrScreen() {
           const result = await deviceService.pairDeviceFromQr(savedDevice.id, {
             ip: savedDevice.ip,
             token: pairingToken,
-            tlsFingerprint: pairingQr.tlsFingerprint,
-            apiPort: pairingQr.apiPort,
-            tlsPort: pairingQr.tlsPort,
+            tlsFingerprint: resolvedTlsFingerprint,
+            apiPort: resolvedApiPort,
+            tlsPort: resolvedTlsPort,
             phoneName: getThisPhoneDisplayName(),
             timeoutMs: 45000,
           });
@@ -144,17 +198,11 @@ export default function ScanDeviceQrScreen() {
           } else if (result.status === 'timeout') {
             pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
           } else {
-            // Say what actually went wrong rather than sending the user to
-            // Settings with no explanation.
+            // Keep recovery in this one-scan flow and say what failed.
             pairingSummary = result.detail
               ? ` Pairing did not finish: ${result.detail}`
               : ' Pairing did not finish. Make sure the WakeMATE companion is running, then try the scan again.';
           }
-
-          // Everything above wrote through deviceService directly; sync the
-          // app-wide connection state so Settings shows the scanned IP and
-          // token without any manual re-entry.
-          await refreshFromStorage();
         }
 
         Alert.alert(
@@ -173,7 +221,7 @@ export default function ScanDeviceQrScreen() {
         setIsProcessing(false);
       }
     },
-    [refreshFromStorage, router]
+    [router]
   );
 
   const renderCameraBody = () => {
@@ -219,7 +267,7 @@ export default function ScanDeviceQrScreen() {
         {isProcessing ? (
           <View style={styles.processingOverlay}>
             <ActivityIndicator size="large" color="#ffffff" />
-            <Text style={styles.processingText}>Saving device... If a pairing dialog appears on the computer, click Yes there.</Text>
+            <Text style={styles.processingText}>Setting up computer... If a pairing dialog appears there, click Yes.</Text>
           </View>
         ) : null}
       </View>

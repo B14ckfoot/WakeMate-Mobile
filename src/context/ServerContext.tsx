@@ -16,8 +16,7 @@ interface ServerContextType {
   /**
    * Re-reads the saved connection from storage into context state. Call
    * after any flow that writes the connection through deviceService directly
-   * (e.g. the device-QR pairing screen), so Settings and connection state
-   * reflect the scanned values without any manual re-entry.
+   * so legacy connection consumers reflect the stored values.
    */
   refreshFromStorage: () => Promise<void>;
   lastStatus: 'success' | 'error' | 'pending' | null;

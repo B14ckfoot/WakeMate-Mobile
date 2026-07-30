@@ -39,9 +39,9 @@ const SECURE_SERVER_TOKEN_OPTIONS: SecureStore.SecureStoreOptions = {
 const DEFAULT_API_PORT = 7777;
 const AUTH_HEADER = 'x-wakemate-token';
 const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
-const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Add it in Settings before using remote controls.';
-const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. In Settings, scan the pairing QR code shown by the WakeMATE tray icon on your computer.';
-const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Re-scan the pairing QR code from the WakeMATE tray icon in Settings.';
+const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Re-scan this computer’s pairing QR code from the Devices screen.';
+const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Scan the pairing QR code shown by the WakeMATE tray icon from the Devices screen.';
+const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Re-scan its pairing QR code from the Devices screen.';
 const DISCOVERY_NAME_KEYS = [
   'name',
   'hostname',
