@@ -4,11 +4,13 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { ArrowLeft } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import deviceService from '../services/deviceService';
 import { useServer } from '../../src/context/ServerContext';
-import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
-import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
-import { parsePairingQrConnection } from '../../src/utils/pairingQr';
+import {
+  completeDevicePairing,
+  parsePairingPayload,
+  PairingFlowError,
+  savePartialPairing,
+} from '../../src/utils/pairingFlow';
 
 export default function ScanDeviceQrScreen() {
   const router = useRouter();
@@ -32,121 +34,49 @@ export default function ScanDeviceQrScreen() {
 
       scanLockedRef.current = true;
 
-      let parsed: unknown;
+      let parsedPayload: ReturnType<typeof parsePairingPayload>;
       try {
-        parsed = JSON.parse(data);
-      } catch {
-        Alert.alert(
-          'Unsupported QR Code',
-          "This doesn't look like a WakeMATE device QR code. Make sure you're scanning the code shown by the companion app.",
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
+        parsedPayload = parsePairingPayload(data);
+      } catch (error) {
+        const message =
+          error instanceof PairingFlowError
+            ? error.message
+            : "This doesn't look like a WakeMATE device QR code. Make sure you're scanning the code shown by the companion app.";
+        Alert.alert('Unsupported QR Code', message, [
+          { text: 'Try Again', onPress: () => { scanLockedRef.current = false; } },
+        ]);
         return;
       }
 
-      // Pairing QR v2 carries the token and transport metadata, so one scan
-      // can save the device and establish a pinned HTTPS connection.
-      const pairingQr = parsePairingQrConnection(data);
-      const pairingToken = pairingQr.token;
-      if (!pairingQr.hasValidTlsMetadata) {
-        Alert.alert(
-          'Invalid Secure Pairing Code',
-          'This QR code advertises secure transport but is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.',
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
-        return;
-      }
-      const connectionPort =
-        pairingQr.tlsFingerprint && pairingQr.tlsPort
-          ? pairingQr.tlsPort
-          : pairingQr.apiPort;
-
-      const fields = extractCompanionFields(parsed, '');
-      const scannedDevice = buildScannedDevice(fields);
+      const { connection, scannedDevice } = parsedPayload;
 
       if (!scannedDevice) {
-        if (pairingToken) {
-          if (pairingQr.ip) {
-            await deviceService.setServerConnection(pairingQr.ip, connectionPort);
-            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
-          }
-          await deviceService.setServerToken(pairingToken);
+        try {
+          await savePartialPairing(connection);
           await refreshFromStorage();
           Alert.alert(
             'Pairing Token Saved',
-            'This QR code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
+            'This code had a pairing token but no complete device details. Open Settings to confirm the companion IP and finish pairing.',
             [{ text: 'OK', onPress: () => router.back() }]
           );
-          return;
+        } catch (error) {
+          const message =
+            error instanceof PairingFlowError
+              ? error.message
+              : 'This code is missing required details. Ask the companion app to regenerate its QR code.';
+          Alert.alert('Incomplete Device Info', message, [
+            { text: 'Try Again', onPress: () => { scanLockedRef.current = false; } },
+          ]);
         }
-
-        Alert.alert(
-          'Incomplete Device Info',
-          "This QR code is missing required details (device name, MAC address, or IP address). Ask the companion app to regenerate its QR code.",
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
         return;
       }
 
       try {
         setIsProcessing(true);
 
-        const existingDevices = await deviceService.getDevices();
-        const existingDevice = existingDevices.find(
-          (device) => device.mac === scannedDevice.mac || device.ip === scannedDevice.ip
-        );
+        const outcome = await completeDevicePairing(scannedDevice, connection);
 
-        const savedDevice = existingDevice
-          ? { ...existingDevice, ...scannedDevice, id: existingDevice.id }
-          : scannedDevice;
-
-        const nextDevices = existingDevice
-          ? existingDevices.map((device) => (device.id === existingDevice.id ? savedDevice : device))
-          : [...existingDevices, savedDevice];
-
-        await deviceService.saveDevices(nextDevices);
-
-        let pairingSummary = '';
-        if (pairingToken) {
-          try {
-            await deviceService.setServerConnection(savedDevice.ip, connectionPort);
-            await deviceService.setServerTlsFingerprint(pairingQr.tlsFingerprint);
-            await deviceService.setServerToken(pairingToken);
-
-            // Protocol v3: swap the QR token for a per-device token so this
-            // phone can be revoked individually from the companion tray.
-            // Older companions fall back to the shared-token activation.
-            const enrollment = await deviceService.enrollDevice(
-              savedDevice.ip,
-              getThisPhoneDisplayName()
-            );
-
-            let approval: 'approved' | 'denied' | 'timeout' | 'unsupported';
-            if (enrollment) {
-              approval = await deviceService.waitForPairingApproval(savedDevice.ip, {
-                timeoutMs: 30000,
-                deviceId: enrollment.deviceId,
-              });
-              if (approval === 'approved') {
-                await deviceService.setServerToken(enrollment.deviceToken);
-              }
-            } else {
-              await deviceService.activatePairedControls(savedDevice.ip, pairingToken);
-              approval = await deviceService.waitForPairingApproval(savedDevice.ip, { timeoutMs: 30000 });
-            }
-
-            if (approval === 'approved' || approval === 'unsupported') {
-              pairingSummary = ' Remote controls are enabled.';
-            } else if (approval === 'denied') {
-              pairingSummary = ' The pairing request was denied on the computer; remote controls stay off.';
-            } else {
-              pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
-            }
-          } catch (pairingError) {
-            console.error('Error pairing from QR scan:', pairingError);
-            pairingSummary = ' The pairing token was saved, but pairing could not be completed yet — finish it in Settings.';
-          }
-
+        if (connection.token) {
           // Everything above wrote through deviceService directly; sync the
           // app-wide connection state so Settings shows the scanned IP and
           // token without any manual re-entry.
@@ -154,8 +84,10 @@ export default function ScanDeviceQrScreen() {
         }
 
         Alert.alert(
-          existingDevice ? 'Device Updated' : 'Device Saved',
-          `${savedDevice.name} is now in your saved devices.${pairingSummary}`,
+          outcome.existingDevice ? 'Device Updated' : 'Device Saved',
+          `${outcome.device.name} is now in your saved devices.${
+            outcome.approvalSummary ? ` ${outcome.approvalSummary}` : ''
+          }`,
           [{ text: 'OK', onPress: () => router.replace('/devices') }]
         );
       } catch (error) {

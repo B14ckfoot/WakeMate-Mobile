@@ -13,6 +13,9 @@ import { ArrowLeft, Edit, Monitor, Power, RefreshCw, Settings, Trash2 } from 'lu
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
+import { refreshDevicePresence } from '../../src/services/presence';
+import { useDevicePresence } from '../../src/hooks/useDevicePresence';
+import { PRESENCE_COLORS, PRESENCE_LABELS, presenceDetailMessage } from '../../src/utils/presenceDisplay';
 
 export default function DeviceDetailScreen() {
   const params = useLocalSearchParams();
@@ -24,6 +27,11 @@ export default function DeviceDetailScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
   const [isWaking, setIsWaking] = useState(false);
+  // Live subscription so the pill updates the moment the shared presence
+  // engine sees a change, without waiting for this screen to refocus.
+  const presence = useDevicePresence(device?.ip);
+  const liveState = presence?.state ?? status;
+  const isOnline = liveState === 'online';
 
   const loadDevice = useCallback(async (refreshStatus: boolean = true) => {
     try {
@@ -41,7 +49,8 @@ export default function DeviceDetailScreen() {
 
       if (refreshStatus) {
         setIsRefreshingStatus(true);
-        const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip);
+        const snapshot = await refreshDevicePresence(foundDevice.ip);
+        const isOnline = snapshot.state === 'online';
         const nextStatus = isOnline ? 'online' : 'offline';
 
         if (nextStatus !== foundDevice.status) {
@@ -98,7 +107,7 @@ export default function DeviceDetailScreen() {
       return;
     }
 
-    if (status === 'online') {
+    if (isOnline) {
       router.push(`/devices/control/${device.id}`);
       return;
     }
@@ -194,20 +203,17 @@ export default function DeviceDetailScreen() {
 
             <View style={styles.statusPill}>
               <View
-                style={[
-                  styles.statusIndicator,
-                  { backgroundColor: status === 'online' ? '#4ade80' : '#6b7280' },
-                ]}
+                style={[styles.statusIndicator, { backgroundColor: PRESENCE_COLORS[liveState] }]}
               />
-              <Text
-                style={[
-                  styles.statusText,
-                  { color: status === 'online' ? '#4ade80' : '#d1d5db' },
-                ]}
-              >
-                {isRefreshingStatus ? 'Checking status...' : status === 'online' ? 'Online' : 'Offline'}
+              <Text style={[styles.statusText, { color: PRESENCE_COLORS[liveState] }]}>
+                {isRefreshingStatus && !presence ? 'Checking status...' : PRESENCE_LABELS[liveState]}
               </Text>
             </View>
+            {presenceDetailMessage(liveState, presence?.message ?? null) ? (
+              <Text style={styles.statusDetailText}>
+                {presenceDetailMessage(liveState, presence?.message ?? null)}
+              </Text>
+            ) : null}
 
             <View style={styles.detailsContainer}>
               <View style={styles.detailRow}>
@@ -397,6 +403,15 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  statusDetailText: {
+    color: '#8aa1ab',
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    marginTop: -12,
+    marginBottom: 20,
+    paddingHorizontal: 12,
   },
   detailsContainer: {
     width: '100%',

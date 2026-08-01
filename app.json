@@ -5,12 +5,13 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "myapp",
+    "scheme": ["myapp", "wakemate"],
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "appleTeamId": "NHGT3Q6R85",
       "bundleIdentifier": "com.anonymous.wakematemobile",
+      "associatedDomains": ["applinks:wakematemobile.com"],
       "entitlements": {
         "com.apple.security.application-groups": [
           "group.com.anonymous.wakematemobile"

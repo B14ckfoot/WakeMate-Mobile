@@ -136,7 +136,11 @@ const UDP_DISCOVERY_TIMEOUT_MS = 900;
 const DISCOVERY_RETRY_DELAY_MS = 250;
 const COMPANION_HEALTH_TIMEOUT_MS = 1200;
 const COMPANION_PAIRING_TIMEOUT_MS = 1200;
-const DEVICE_STATUS_TIMEOUT_MS = 1200;
+// Generous enough to cover a cold TLS handshake or the iOS local-network
+// permission prompt on the first check after pairing; the presence engine
+// treats a slow-but-eventually-successful first check as "Connecting", not
+// "Offline" (see src/services/presence.ts).
+const DEVICE_STATUS_TIMEOUT_MS = 2500;
 const PAIRING_CACHE_TTL_MS = 15000;
 
 const pairingValidationCache = new Map<string, { expiresAt: number; data: any }>();
@@ -911,6 +915,73 @@ const extractCompanionErrorMessage = (payload: unknown): string | null => {
   return message ?? null;
 };
 
+export type DeviceStatusCheckReason =
+  | 'ok'
+  | 'timeout'
+  | 'network'
+  | 'auth'
+  | 'fingerprint_mismatch'
+  | 'http_error'
+  | 'unknown';
+
+export type DeviceStatusCheckResult = {
+  online: boolean;
+  reason: DeviceStatusCheckReason;
+  message: string | null;
+};
+
+/**
+ * Turns a failed health-check request into a specific, user-facing reason
+ * instead of a bare boolean. Distinguishing "auth"/"fingerprint_mismatch"
+ * (re-pair, do not just retry) from "timeout"/"network" (transient, keep
+ * retrying) is what lets the presence state machine show Connecting or
+ * Unreachable instead of jumping straight to a false Offline.
+ */
+const classifyCompanionUnreachableError = (
+  error: unknown
+): { reason: DeviceStatusCheckReason; message: string | null } => {
+  if (isAxiosError(error)) {
+    const status = error.response?.status;
+
+    if (isUnauthorizedStatus(status)) {
+      return {
+        reason: 'auth',
+        message: 'Companion authentication failed. Re-pair this device from the QR code.',
+      };
+    }
+
+    if (typeof status === 'number') {
+      return { reason: 'http_error', message: `Companion responded with status ${status}.` };
+    }
+
+    if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message ?? '')) {
+      return { reason: 'timeout', message: 'The companion did not respond in time.' };
+    }
+
+    return {
+      reason: 'network',
+      message: 'Companion could not be reached on the local network.',
+    };
+  }
+
+  if (error instanceof Error) {
+    if (/fingerprint mismatch/i.test(error.message)) {
+      return {
+        reason: 'fingerprint_mismatch',
+        message: 'The companion certificate did not match the pinned fingerprint.',
+      };
+    }
+
+    if (/timeout/i.test(error.message)) {
+      return { reason: 'timeout', message: 'The companion did not respond in time.' };
+    }
+
+    return { reason: 'network', message: error.message };
+  }
+
+  return { reason: 'unknown', message: 'Companion could not be reached.' };
+};
+
 const normalizeCompanionRequestError = (error: unknown, fallbackMessage: string): Error => {
   if (isAxiosError(error)) {
     const status = error.response?.status;
@@ -1480,6 +1551,40 @@ const deviceService = {
     } catch (error) {
       console.log('Error checking device status:', error);
       return false;
+    }
+  },
+
+  /**
+   * Same health check as {@link checkDeviceStatus}, but reports *why* an
+   * unreachable companion failed instead of collapsing every failure to
+   * `false`. Used by the presence engine (src/services/presence.ts) to
+   * distinguish "still connecting" / "transient" from "re-pair needed".
+   */
+  async checkDeviceStatusDetailed(deviceIp: string): Promise<DeviceStatusCheckResult> {
+    try {
+      const { port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(deviceIp);
+      const response = await requestCompanion<any>({
+        ip: deviceIp,
+        port: targetPort,
+        path: '/v1/health',
+        timeoutMs: DEVICE_STATUS_TIMEOUT_MS,
+        tlsFingerprint,
+        headers: {
+          'Cache-Control': 'no-cache',
+        },
+      });
+
+      const online = response.data?.ok === true && response.data?.data?.status === 'online';
+      return online
+        ? { online: true, reason: 'ok', message: null }
+        : {
+            online: false,
+            reason: 'unknown',
+            message: 'Companion responded but did not report itself online.',
+          };
+    } catch (error) {
+      console.log('Error checking device status:', error);
+      return { online: false, ...classifyCompanionUnreachableError(error) };
     }
   },
 

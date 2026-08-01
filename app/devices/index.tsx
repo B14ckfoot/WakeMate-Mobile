@@ -17,6 +17,7 @@ import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
 import SwipeableDeviceItem from '../../src/components/SwipeableDeviceItem';
 import { useServer } from '../../src/context/ServerContext';
+import { forgetDevicePresence, refreshDevicePresence } from '../../src/services/presence';
 
 export default function DevicesScreen() {
   const router = useRouter();
@@ -38,10 +39,13 @@ export default function DevicesScreen() {
     try {
       const statusResults = await Promise.allSettled(
         deviceList.map(async (device) => {
-          const isOnline = await deviceService.checkDeviceStatus(device.ip);
+          // Routed through the shared presence engine (not a one-off health
+          // check) so this refresh and any open detail/control screen for
+          // the same device agree on the same live state.
+          const snapshot = await refreshDevicePresence(device.ip);
           return {
             ...device,
-            status: isOnline ? 'online' : 'offline',
+            status: snapshot.state === 'online' ? 'online' : 'offline',
           } satisfies Device;
         })
       );
@@ -113,9 +117,13 @@ export default function DevicesScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              const deletedDevice = devices.find((device) => device.id === id);
               const updatedDevices = devices.filter((device) => device.id !== id);
               await deviceService.saveDevices(updatedDevices);
               setDevices(updatedDevices);
+              if (deletedDevice) {
+                forgetDevicePresence(deletedDevice.ip);
+              }
             } catch (error) {
               console.error('Error deleting device:', error);
               Alert.alert('Error', 'Failed to delete device');

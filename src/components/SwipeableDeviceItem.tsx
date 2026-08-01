@@ -9,6 +9,8 @@ import {
 import { Device } from '../../src/types/device';
 import { Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
+import { useDevicePresence } from '../hooks/useDevicePresence';
+import { PRESENCE_COLORS, PRESENCE_LABELS } from '../utils/presenceDisplay';
 
 interface SwipeableDeviceItemProps {
   device: Device;
@@ -26,6 +28,12 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
   const router = useRouter();
   const translateX = useRef(new Animated.Value(0)).current;
   const translateXValue = useRef(0);
+  const presence = useDevicePresence(device.ip);
+  // Live presence takes over as soon as the engine has a reading; until
+  // then, fall back to the last persisted status so the row is never blank.
+  const displayState = presence?.state ?? (device.status === 'online' ? 'online' : 'offline');
+  const displayLabel = presence ? PRESENCE_LABELS[presence.state] : PRESENCE_LABELS[displayState];
+  const displayColor = presence ? PRESENCE_COLORS[presence.state] : PRESENCE_COLORS[displayState];
 
   useEffect(() => {
     const listenerId = translateX.addListener(({ value }) => {
@@ -131,13 +139,8 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
               <Text style={styles.deviceIp}>{device.ip}</Text>
             </View>
             <View style={styles.statusContainer}>
-              <View style={[
-                styles.statusIndicator, 
-                { backgroundColor: device.status === 'online' ? '#4ade80' : '#6b7280' }
-              ]} />
-              <Text style={styles.statusText}>
-                {device.status === 'online' ? 'Online' : 'Offline'}
-              </Text>
+              <View style={[styles.statusIndicator, { backgroundColor: displayColor }]} />
+              <Text style={styles.statusText}>{displayLabel}</Text>
             </View>
           </TouchableOpacity>
         </Animated.View>

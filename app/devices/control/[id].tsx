@@ -53,6 +53,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VolumeManager } from 'react-native-volume-manager';
 import { Device, DevicePlatform } from '../../../src/types/device';
 import deviceService from '../../../src/services/deviceService';
+import { refreshDevicePresence } from '../../../src/services/presence';
+import { useDevicePresence } from '../../../src/hooks/useDevicePresence';
+import { PRESENCE_LABELS, presenceDetailMessage } from '../../../src/utils/presenceDisplay';
 import {
   getPrimaryShortcutModifier,
   inferDevicePlatformFromMetadata,
@@ -237,6 +240,23 @@ export default function DeviceControlScreen() {
   const [isDevicePickerOpen, setIsDevicePickerOpen] = useState(false);
   const [status, setStatus] = useState<'online' | 'offline'>('offline');
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
+  // Live subscription: this screen is the one place a transient blip
+  // matters most (it gates every input command), so it reflects the shared
+  // presence engine's state in real time, not just on focus/refresh.
+  const presence = useDevicePresence(device?.ip);
+  const liveState = presence?.state ?? (status === 'online' ? 'online' : 'offline');
+
+  useEffect(() => {
+    if (!presence) {
+      return;
+    }
+    // Every existing `status === 'online'` gate throughout this screen
+    // (touchpad, keyboard, media, power) stays correct by construction once
+    // `status` itself tracks the live presence state, instead of updating
+    // each gate individually.
+    const nextStatus = presence.state === 'online' ? 'online' : 'offline';
+    setStatus((previous) => (previous === nextStatus ? previous : nextStatus));
+  }, [presence]);
   const [feedback, setFeedback] = useState<ActionFeedback | null>(null);
   const [setupMessage, setSetupMessage] = useState<string | null>(null);
   const [scrollThumbOffset, setScrollThumbOffset] = useState(0);
@@ -406,10 +426,13 @@ export default function DeviceControlScreen() {
         setLoading(false);
       }
 
-      const [companionSetupError, isOnline] = await Promise.all([
+      const [companionSetupError, presenceSnapshot] = await Promise.all([
         deviceService.getCompanionSetupError({ validateToken: true }),
-        refreshStatus ? deviceService.checkDeviceStatus(foundDevice.ip) : Promise.resolve(foundDevice.status === 'online'),
+        refreshStatus
+          ? refreshDevicePresence(foundDevice.ip)
+          : Promise.resolve(null),
       ]);
+      const isOnline = presenceSnapshot ? presenceSnapshot.state === 'online' : foundDevice.status === 'online';
 
       let nextDevice = foundDevice;
       const nextStatus = isOnline ? 'online' : 'offline';
@@ -1771,14 +1794,17 @@ export default function DeviceControlScreen() {
             </View>
           ) : (
             <View style={styles.fallbackCard}>
-              <Text style={styles.panelEyebrow}>{deviceIsOnline ? 'Companion setup' : 'Device offline'}</Text>
+              <Text style={styles.panelEyebrow}>
+                {deviceIsOnline ? 'Companion setup' : PRESENCE_LABELS[liveState]}
+              </Text>
               <Text style={styles.panelTitle}>
                 {deviceIsOnline ? 'Finish Companion Setup' : 'Remote controls are paused'}
               </Text>
               <Text style={styles.panelDescription}>
                 {deviceIsOnline
                   ? setupMessage
-                  : 'WakeMate needs to confirm the computer is online again before it enables the control dock.'}
+                  : presenceDetailMessage(liveState, presence?.message ?? null) ??
+                    'WakeMate needs to confirm the computer is online again before it enables the control dock.'}
               </Text>
 
               <View style={styles.fallbackActions}>
