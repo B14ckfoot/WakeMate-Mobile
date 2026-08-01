@@ -14,6 +14,7 @@ import { normalizeTlsFingerprint } from './companionTransport';
 
 const TOKEN_PREFIX = 'wakemate.companion.token.v2.';
 const FINGERPRINT_PREFIX = 'wakemate.companion.tlsFingerprint.v2.';
+const PENDING_ENROLLMENT_PREFIX = 'wakemate.companion.pendingEnrollment.v1.';
 
 // The pre-multi-device keys. Read once during migration, then deleted.
 export const LEGACY_TOKEN_KEY = 'wakemate.companion.token.v1';
@@ -39,6 +40,13 @@ const encodeDeviceId = (deviceId: string): string =>
 const tokenKey = (deviceId: string): string => `${TOKEN_PREFIX}${encodeDeviceId(deviceId)}`;
 const fingerprintKey = (deviceId: string): string =>
   `${FINGERPRINT_PREFIX}${encodeDeviceId(deviceId)}`;
+const pendingEnrollmentKey = (deviceId: string): string =>
+  `${PENDING_ENROLLMENT_PREFIX}${encodeDeviceId(deviceId)}`;
+
+export type PendingDeviceEnrollment = {
+  enrollmentId: string;
+  deviceToken: string;
+};
 
 const assertSecureStoreAvailable = async (): Promise<void> => {
   if (!(await SecureStore.isAvailableAsync())) {
@@ -91,6 +99,86 @@ export const setDeviceToken = async (
   await SecureStore.setItemAsync(tokenKey(deviceId), trimmed, SECURE_OPTIONS);
 };
 
+/**
+ * Holds the per-device credential returned before desktop approval. The
+ * existing QR token remains in the normal token slot so denial and a fresh
+ * scan still have a safe rollback path. If iOS suspends or terminates the app
+ * while the prompt is open, this staged credential survives and can be
+ * verified/promoted on the next authenticated connection.
+ */
+export const getPendingDeviceEnrollment = async (
+  deviceId: string
+): Promise<PendingDeviceEnrollment | null> => {
+  if (!deviceId.trim()) {
+    return null;
+  }
+
+  const stored = await readSecure(pendingEnrollmentKey(deviceId));
+  if (!stored) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Invalid pending enrollment');
+    }
+
+    const record = parsed as Record<string, unknown>;
+    const enrollmentId = typeof record.enrollmentId === 'string'
+      ? record.enrollmentId.trim()
+      : '';
+    const deviceToken = typeof record.deviceToken === 'string'
+      ? record.deviceToken.trim()
+      : '';
+
+    if (!enrollmentId || !deviceToken) {
+      throw new Error('Invalid pending enrollment');
+    }
+
+    return { enrollmentId, deviceToken };
+  } catch {
+    await deleteSecure(pendingEnrollmentKey(deviceId));
+    return null;
+  }
+};
+
+export const setPendingDeviceEnrollment = async (
+  deviceId: string,
+  enrollment: PendingDeviceEnrollment | null
+): Promise<void> => {
+  if (!deviceId.trim()) {
+    throw new Error('A device is required before a pending enrollment can be saved.');
+  }
+
+  await assertSecureStoreAvailable();
+
+  if (!enrollment) {
+    await deleteSecure(pendingEnrollmentKey(deviceId));
+    return;
+  }
+
+  const enrollmentId = enrollment.enrollmentId.trim();
+  const deviceToken = enrollment.deviceToken.trim();
+  if (!enrollmentId || !deviceToken) {
+    throw new Error('A pending enrollment requires an id and device token.');
+  }
+
+  await SecureStore.setItemAsync(
+    pendingEnrollmentKey(deviceId),
+    JSON.stringify({ enrollmentId, deviceToken }),
+    SECURE_OPTIONS
+  );
+};
+
+export const clearPendingDeviceEnrollment = async (deviceId: string): Promise<void> => {
+  if (!deviceId.trim()) {
+    return;
+  }
+
+  await deleteSecure(pendingEnrollmentKey(deviceId));
+};
+
 export const getDeviceTlsFingerprint = async (deviceId: string): Promise<string | null> => {
   if (!deviceId.trim()) {
     return null;
@@ -138,7 +226,11 @@ export const clearDeviceCredentials = async (deviceId: string): Promise<void> =>
     return;
   }
 
-  await Promise.all([deleteSecure(tokenKey(deviceId)), deleteSecure(fingerprintKey(deviceId))]);
+  await Promise.all([
+    deleteSecure(tokenKey(deviceId)),
+    deleteSecure(fingerprintKey(deviceId)),
+    deleteSecure(pendingEnrollmentKey(deviceId)),
+  ]);
 };
 
 /** Reads the pre-multi-device secrets so they can be adopted by one device. */

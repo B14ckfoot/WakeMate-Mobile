@@ -19,11 +19,14 @@ import {
   requestCompanion,
 } from './companionTransport';
 import {
+  clearPendingDeviceEnrollment,
   clearDeviceCredentials,
   clearLegacyCredentials,
+  getPendingDeviceEnrollment,
   getDeviceTlsFingerprint,
   getDeviceToken,
   readLegacyCredentials,
+  setPendingDeviceEnrollment,
   setDeviceTlsFingerprint,
   setDeviceToken,
 } from './companionCredentials';
@@ -177,6 +180,10 @@ const UDP_DISCOVERY_TIMEOUT_MS = 900;
 const DISCOVERY_RETRY_DELAY_MS = 250;
 const COMPANION_HEALTH_TIMEOUT_MS = 1200;
 const COMPANION_PAIRING_TIMEOUT_MS = 1200;
+// Match the companion's pending-enrollment lifetime. The app must keep the
+// one-time QR credential until the desktop can no longer approve and commit
+// the per-device credential.
+export const PAIRING_APPROVAL_TIMEOUT_MS = 120_000;
 const DEVICE_STATUS_TIMEOUT_MS = 1200;
 const PAIRING_CACHE_TTL_MS = 15000;
 // Longer than the 5s used for ordinary commands: the companion may switch to
@@ -1282,7 +1289,14 @@ const requireServerToken = async (deviceId?: string | null): Promise<string> => 
   const trimmedId = deviceId?.trim();
 
   if (trimmedId) {
-    const deviceToken = normalizeStoredValue(await getDeviceToken(trimmedId));
+    // A newly enrolled token is deliberately staged before desktop approval
+    // so an iOS suspension/process kill cannot lose the credential that the
+    // Companion may approve while JavaScript is stopped. It grants nothing
+    // until that explicit approval occurs.
+    const pendingEnrollment = await getPendingDeviceEnrollment(trimmedId);
+    const deviceToken = normalizeStoredValue(
+      pendingEnrollment?.deviceToken ?? await getDeviceToken(trimmedId)
+    );
     if (deviceToken) {
       return deviceToken;
     }
@@ -1313,7 +1327,13 @@ const deviceService = {
       // Fall back to the legacy shared token so an unmigrated setup still
       // reports itself as paired.
       deviceId
-        ? getDeviceToken(deviceId).then((value) => value ?? this.getServerToken())
+        ? Promise.all([
+            getPendingDeviceEnrollment(deviceId),
+            getDeviceToken(deviceId),
+          ]).then(
+            ([pendingEnrollment, storedToken]) =>
+              pendingEnrollment?.deviceToken ?? storedToken ?? this.getServerToken()
+          )
         : this.getServerToken(),
     ]);
 
@@ -1529,14 +1549,12 @@ const deviceService = {
   },
 
   // Completes pairing for one computer in a single call: store its connection
-  // details and QR token, swap that for a per-device token where the companion
-  // supports it, then wait for the desktop approval.
+  // details and QR token, durably stage a per-device token where the companion
+  // supports it, then wait for explicit desktop approval before promotion.
   //
-  // Every step degrades instead of aborting. The previous flow gave up the
-  // moment enrollment threw -- it only fell back to the legacy activation when
-  // enrollment returned null (a 404) -- so one transient 429 ("another pairing
-  // request is already waiting") or a 403 from the pre-logon service left the
-  // token saved but the pairing unfinished, with no reason shown.
+  // Legacy activation is only for a true 404 from a Companion that predates
+  // enrollment. Modern Busy/Unavailable/transport failures stay in the
+  // per-device flow and return a truthful recovery message.
   async pairDeviceFromQr(
     deviceId: string,
     options: {
@@ -1552,7 +1570,7 @@ const deviceService = {
     status: 'approved' | 'denied' | 'timeout' | 'unsupported' | 'failed';
     detail: string | null;
   }> {
-    const timeoutMs = options.timeoutMs ?? 45000;
+    const timeoutMs = options.timeoutMs ?? PAIRING_APPROVAL_TIMEOUT_MS;
     const fingerprint = normalizeTlsFingerprint(options.tlsFingerprint);
 
     // Persist the connection first so every later call resolves to this
@@ -1564,6 +1582,10 @@ const deviceService = {
     });
     await setDeviceTlsFingerprint(deviceId, fingerprint);
     await setDeviceToken(deviceId, options.token);
+    // A deliberate re-scan supersedes any enrollment left pending by an
+    // interrupted earlier attempt. Clear it only after the fresh QR token is
+    // safely stored, so credential writes never leave the device empty.
+    await clearPendingDeviceEnrollment(deviceId);
 
     let enrollment: { deviceId: string; deviceToken: string } | null = null;
     let enrollmentError: string | null = null;
@@ -1576,7 +1598,10 @@ const deviceService = {
         enrollmentError = null;
         break;
       } catch (error) {
-        enrollmentError = error instanceof Error ? error.message : 'Enrollment failed.';
+        enrollmentError = normalizeCompanionRequestError(
+          error,
+          'Unable to start pairing with the companion.'
+        ).message;
         const isBusy = isAxiosError(error) && error.response?.status === 429;
         if (!isBusy || attempt === 1) {
           break;
@@ -1587,25 +1612,50 @@ const deviceService = {
 
     try {
       if (enrollment) {
+        // Persist the not-yet-authorized credential before waiting. It grants
+        // nothing until the desktop user approves, but it must survive iOS
+        // suspension or process termination if approval happens meanwhile.
+        // The QR token stays in the primary slot for polling and rollback.
+        await setPendingDeviceEnrollment(deviceId, {
+          enrollmentId: enrollment.deviceId,
+          deviceToken: enrollment.deviceToken,
+        });
+
         const approval = await this.waitForPairingApproval(options.ip, {
           timeoutMs,
           deviceId: enrollment.deviceId,
           localDeviceId: deviceId,
+          authToken: options.token,
         });
 
         if (approval === 'approved') {
-          // Only now replace the shared QR token: if this write happened
-          // earlier and approval never came, the device would be left holding
-          // a token the companion has not activated.
           await setDeviceToken(deviceId, enrollment.deviceToken);
+          await clearPendingDeviceEnrollment(deviceId);
+        } else if (
+          approval === 'denied' ||
+          (approval === 'timeout' && timeoutMs >= PAIRING_APPROVAL_TIMEOUT_MS)
+        ) {
+          // Definite denial or completion of at least the Companion's full
+          // enrollment lifetime: discard the inert staged credential while
+          // retaining the QR token. Short caller-supplied timeouts, thrown
+          // transport errors, and process interruption remain ambiguous, so
+          // their staging survives for recovery after resume/relaunch.
+          await clearPendingDeviceEnrollment(deviceId);
         }
 
         return { status: approval, detail: null };
       }
 
-      // No enrollment -- either an older companion (404) or a failure we are
-      // deliberately not treating as fatal. The shared-token activation still
-      // gets remote controls switched on.
+      // Only an actual 404 from an older Companion returns `null` without
+      // an error. Busy, unavailable, and transport failures must not fall
+      // through to the process-wide legacy activation, which could observe or
+      // approve somebody else's pending prompt and yields no per-device token.
+      if (enrollmentError) {
+        return { status: 'failed', detail: enrollmentError };
+      }
+
+      // No enrollment and no error means an older Companion returned 404.
+      // Its shared-token activation remains the deliberate compatibility path.
       await this.activatePairedControls(options.ip, options.token, deviceId);
       const approval = await this.waitForPairingApproval(options.ip, {
         timeoutMs,
@@ -1625,6 +1675,7 @@ const deviceService = {
 
   async setDeviceCompanionToken(deviceId: string, token: string | null): Promise<void> {
     await setDeviceToken(deviceId, token);
+    await clearPendingDeviceEnrollment(deviceId);
   },
 
   async setDeviceCompanionTlsFingerprint(
@@ -1794,10 +1845,18 @@ const deviceService = {
       tlsFingerprint,
     } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
     const token = await requireServerToken(localDeviceId);
+    const trimmedLocalDeviceId = localDeviceId?.trim() || null;
+    const pendingEnrollment = trimmedLocalDeviceId
+      ? await getPendingDeviceEnrollment(trimmedLocalDeviceId)
+      : null;
     const cacheKey = `${targetIp}:${targetPort}:${tlsFingerprint ?? 'http'}:${token}`;
     const cachedResult = pairingValidationCache.get(cacheKey);
 
     if (cachedResult && cachedResult.expiresAt > Date.now()) {
+      if (trimmedLocalDeviceId && pendingEnrollment?.deviceToken === token) {
+        await setDeviceToken(trimmedLocalDeviceId, token);
+        await clearPendingDeviceEnrollment(trimmedLocalDeviceId);
+      }
       return cachedResult.data;
     }
 
@@ -1815,6 +1874,14 @@ const deviceService = {
         expiresAt: Date.now() + PAIRING_CACHE_TTL_MS,
         data: response.data,
       });
+
+      // A successful authenticated request proves that a staged enrollment
+      // was approved while this process was suspended or terminated. Promote
+      // it now and retire the QR rollback credential.
+      if (trimmedLocalDeviceId && pendingEnrollment?.deviceToken === token) {
+        await setDeviceToken(trimmedLocalDeviceId, token);
+        await clearPendingDeviceEnrollment(trimmedLocalDeviceId);
+      }
       return response.data;
     } catch (error) {
       pairingValidationCache.delete(cacheKey);
@@ -1825,7 +1892,8 @@ const deviceService = {
   async getPairingStatus(
     serverIp?: string,
     deviceId?: string | null,
-    localDeviceId?: string | null
+    localDeviceId?: string | null,
+    authToken?: string | null
   ): Promise<{
     approval: 'idle' | 'pending' | 'approved' | 'denied' | '';
     allowInputCommands: boolean;
@@ -1836,7 +1904,7 @@ const deviceService = {
       port: targetPort,
       tlsFingerprint,
     } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
-    const token = await requireServerToken(localDeviceId);
+    const token = normalizeStoredValue(authToken) ?? await requireServerToken(localDeviceId);
     const trimmedDeviceId = deviceId?.trim();
     const statusPath = trimmedDeviceId
       ? `/v1/pairing/status?device_id=${encodeURIComponent(trimmedDeviceId)}`
@@ -1879,16 +1947,18 @@ const deviceService = {
       intervalMs?: number;
       deviceId?: string | null;
       localDeviceId?: string | null;
+      authToken?: string | null;
     } = {}
   ): Promise<'approved' | 'denied' | 'timeout' | 'unsupported'> {
-    const timeoutMs = options.timeoutMs ?? 45000;
+    const timeoutMs = options.timeoutMs ?? PAIRING_APPROVAL_TIMEOUT_MS;
     const intervalMs = options.intervalMs ?? 2000;
     const deviceId = options.deviceId?.trim() || null;
     const localDeviceId = options.localDeviceId?.trim() || null;
+    const authToken = normalizeStoredValue(options.authToken);
     const deadline = Date.now() + timeoutMs;
 
     for (;;) {
-      const status = await this.getPairingStatus(serverIp, deviceId, localDeviceId);
+      const status = await this.getPairingStatus(serverIp, deviceId, localDeviceId, authToken);
 
       if (!status) {
         return 'unsupported';
@@ -1909,11 +1979,15 @@ const deviceService = {
         return 'denied';
       }
 
-      if (Date.now() + intervalMs > deadline) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
         return 'timeout';
       }
 
-      await wait(intervalMs);
+      // Poll once at the deadline rather than stopping one full interval
+      // early. That closes the window where the desktop could still commit
+      // an enrollment after the phone had already abandoned its token swap.
+      await wait(Math.min(intervalMs, remainingMs));
     }
   },
 
@@ -1950,13 +2024,22 @@ const deviceService = {
       const deviceId = isRecord(data) ? toCandidateString(data.device_id) : null;
       const deviceToken = isRecord(data) ? toCandidateString(data.device_token) : null;
 
-      return deviceId && deviceToken ? { deviceId, deviceToken } : null;
+      if (response.data?.ok !== true || !deviceId || !deviceToken) {
+        throw new Error(
+          'The companion returned an invalid enrollment response. Update it and scan a new pairing QR code.'
+        );
+      }
+
+      return { deviceId, deviceToken };
     } catch (error) {
-      if (isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 405)) {
+      if (isAxiosError(error) && error.response?.status === 404) {
         // Older companion without per-device enrollment.
         return null;
       }
-      throw normalizeCompanionRequestError(error, 'Unable to start pairing with the companion.');
+      // The orchestration layer needs the HTTP status to distinguish a
+      // retryable 429 from unsupported legacy companions. It normalizes the
+      // message before returning anything to UI.
+      throw error;
     }
   },
 

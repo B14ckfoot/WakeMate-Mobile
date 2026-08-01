@@ -5,9 +5,9 @@ import { ArrowLeft } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import deviceService from '../services/deviceService';
-import { buildScannedDevice, extractCompanionFields } from '../../src/utils/deviceMetadata';
+import { buildScannedDevice } from '../../src/utils/deviceMetadata';
 import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
-import { parsePairingQrConnection } from '../../src/utils/pairingQr';
+import { parseStructuredPairingQr } from '../../src/utils/pairingQr';
 
 export default function ScanDeviceQrScreen() {
   const router = useRouter();
@@ -30,47 +30,33 @@ export default function ScanDeviceQrScreen() {
 
       scanLockedRef.current = true;
 
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        // Bare-token and unrelated QR codes are rejected below because they
-        // carry no trustworthy computer identity.
+      const parsedQr = parseStructuredPairingQr(data);
+      if (!parsedQr.ok) {
+        const invalidTls = parsedQr.error.code === 'invalid_tls_metadata';
+        Alert.alert(
+          invalidTls ? 'Invalid Secure Pairing Code' : 'Unsupported Pairing Code',
+          parsedQr.error.message,
+          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
+        );
+        return;
       }
 
-      // Pairing QR v2 carries the token and transport metadata, so one scan
-      // can save the device and establish a pinned HTTPS connection.
-      const pairingQr = parsePairingQrConnection(data);
+      // Both supported QR contracts are normalized before anything can be
+      // discovered or persisted, so parsing and device extraction cannot
+      // disagree about which identity or transport fields were scanned.
+      const { connection: pairingQr, deviceMac, deviceName: qrDeviceName } =
+        parsedQr.value;
       const pairingToken = pairingQr.token;
-      const qrRecord =
-        parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-          ? (parsed as Record<string, unknown>)
-          : null;
-
-      if (!qrRecord) {
-        Alert.alert(
-          'Unsupported Pairing Code',
-          'Scan the current device QR code from the WakeMATE companion. If the companion shows a bare token instead, update it and regenerate the QR code.',
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
-        return;
-      }
-
-      if (!pairingQr.hasValidTlsMetadata) {
-        Alert.alert(
-          'Invalid Secure Pairing Code',
-          'This QR code advertises secure transport but is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.',
-          [{ text: 'Try Again', onPress: () => { scanLockedRef.current = false; } }]
-        );
-        return;
-      }
-      const qrDeviceName =
-        typeof qrRecord?.name === 'string' ? qrRecord.name.trim() : '';
 
       let resolvedApiPort = pairingQr.apiPort;
       const resolvedTlsPort = pairingQr.tlsPort;
       const resolvedTlsFingerprint = pairingQr.tlsFingerprint;
-      let fields = extractCompanionFields(parsed ?? {}, pairingQr.ip ?? '');
+      let fields: Parameters<typeof buildScannedDevice>[0] = {
+        name: qrDeviceName,
+        pingIp: pairingQr.ip ?? '',
+        mac: deviceMac ?? '',
+        wakeAddress: '',
+      };
       let scannedDevice = buildScannedDevice(fields);
 
       if (!scannedDevice && pairingToken) {
@@ -188,15 +174,16 @@ export default function ScanDeviceQrScreen() {
             apiPort: resolvedApiPort,
             tlsPort: resolvedTlsPort,
             phoneName: getThisPhoneDisplayName(),
-            timeoutMs: 45000,
           });
 
-          if (result.status === 'approved' || result.status === 'unsupported') {
+          if (result.status === 'approved') {
             pairingSummary = ' Remote controls are enabled.';
+          } else if (result.status === 'unsupported') {
+            pairingSummary = ' Pairing was requested. This older Companion cannot confirm approval in the app, so approve the prompt on the computer before using remote controls.';
           } else if (result.status === 'denied') {
             pairingSummary = ' The pairing request was denied on the computer; remote controls stay off.';
           } else if (result.status === 'timeout') {
-            pairingSummary = ' Approve the pairing dialog on the computer to enable remote controls.';
+            pairingSummary = ' Pairing timed out. Show a new pairing QR code on the computer and scan it again.';
           } else {
             // Keep recovery in this one-scan flow and say what failed.
             pairingSummary = result.detail

@@ -81,7 +81,7 @@ jest.mock('../src/utils/deviceIdentity', () => ({
 const scannedFingerprint = 'b'.repeat(64);
 
 const currentQrWithoutMac = JSON.stringify({
-  v: 2,
+  v: 3,
   kind: 'wakemate-pairing',
   name: 'Desk PC',
   ip: '192.168.1.25',
@@ -137,7 +137,7 @@ it('rejects a bare token instead of guessing which computer owns it', async () =
 
   expect(Alert.alert).toHaveBeenCalledWith(
     'Unsupported Pairing Code',
-    expect.stringContaining('update it'),
+    expect.stringContaining('structured device QR code'),
     expect.any(Array)
   );
   expect(mockDiscoverCompanions).not.toHaveBeenCalled();
@@ -147,7 +147,33 @@ it('rejects a bare token instead of guessing which computer owns it', async () =
   await unmountScanner(renderer);
 });
 
-it('fills a missing MAC by exact IP but keeps TLS metadata from the QR', async () => {
+it('rejects a v3 code with only half of its TLS metadata', async () => {
+  const renderer = await renderScanner();
+  const incompleteTlsQr = JSON.stringify({
+    v: 3,
+    kind: 'wakemate-pairing',
+    name: 'Desk PC',
+    ip: '192.168.1.25',
+    api_port: 7777,
+    tls_port: 7778,
+    token: 'current-pairing-token',
+  });
+
+  await scan(renderer, incompleteTlsQr);
+
+  expect(Alert.alert).toHaveBeenCalledWith(
+    'Invalid Secure Pairing Code',
+    expect.stringContaining('certificate fingerprint'),
+    expect.any(Array)
+  );
+  expect(mockDiscoverCompanions).not.toHaveBeenCalled();
+  expect(mockSaveDevices).not.toHaveBeenCalled();
+  expect(mockPairDeviceFromQr).not.toHaveBeenCalled();
+
+  await unmountScanner(renderer);
+});
+
+it('pairs a valid v3 code and fills a missing MAC by exact IP', async () => {
   mockDiscoverCompanions.mockResolvedValue([
     {
       serverIp: '192.168.1.25',
@@ -175,6 +201,43 @@ it('fills a missing MAC by exact IP but keeps TLS metadata from the QR', async (
       tlsPort: 7778,
       tlsFingerprint: scannedFingerprint,
     })
+  );
+
+  await unmountScanner(renderer);
+});
+
+it('does not claim remote controls are enabled when a legacy companion cannot report approval', async () => {
+  mockDiscoverCompanions.mockResolvedValue([
+    {
+      serverIp: '192.168.1.25',
+      deviceName: 'Desk PC',
+      macAddress: '00:11:22:33:44:55',
+      wakeAddress: '192.168.1.255',
+      wakePort: 9,
+      apiPort: 7777,
+      tlsPort: 7778,
+      tlsFingerprint: scannedFingerprint,
+      version: '1.0.0',
+      platform: 'windows',
+    },
+  ]);
+  mockPairDeviceFromQr.mockResolvedValue({
+    status: 'unsupported',
+    detail: null,
+  });
+  const renderer = await renderScanner();
+
+  await scan(renderer, currentQrWithoutMac);
+
+  expect(Alert.alert).toHaveBeenLastCalledWith(
+    'Device Saved',
+    expect.stringContaining('This older Companion cannot confirm approval'),
+    expect.any(Array)
+  );
+  expect(Alert.alert).not.toHaveBeenLastCalledWith(
+    expect.any(String),
+    expect.stringContaining('Remote controls are enabled'),
+    expect.any(Array)
   );
 
   await unmountScanner(renderer);

@@ -13,11 +13,14 @@ import {
   View,
 } from 'react-native';
 import Constants from 'expo-constants';
+import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ArrowLeft,
   Edit,
+  ExternalLink,
   Info,
+  MonitorDown,
   RefreshCw,
   Save,
   Trash,
@@ -34,8 +37,9 @@ import {
   normalizeMacAddress,
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
+import { COMPANION_DOWNLOAD_URL } from './CompanionSetupPrompt';
 
-const appVersion = Constants.expoConfig?.version ?? '1.1.0';
+const appVersion = Constants.expoConfig?.version ?? '1.1.1';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -194,6 +198,18 @@ export default function SettingsScreen() {
     );
   };
 
+  const handleOpenCompanionSetup = useCallback(async () => {
+    try {
+      await WebBrowser.openBrowserAsync(COMPANION_DOWNLOAD_URL);
+    } catch (error) {
+      console.warn('Could not open the WakeMATE Companion download page:', error);
+      Alert.alert(
+        'Couldn\'t Open the Website',
+        'Visit wakematemobile.com from your computer to download WakeMATE Companion.'
+      );
+    }
+  }, []);
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -228,6 +244,26 @@ export default function SettingsScreen() {
             <Text style={styles.title}>Settings</Text>
             <TouchableOpacity style={styles.headerButton} onPress={loadData}>
               <RefreshCw size={20} color="#0891b2" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <MonitorDown size={20} color="#0891b2" />
+              <Text style={styles.sectionTitle}>Windows Companion</Text>
+            </View>
+
+            <Text style={styles.companionDescription}>
+              Download the Companion on the Windows PC you want to wake and control, then scan its tray QR code inside WakeMATE.
+            </Text>
+            <TouchableOpacity
+              style={styles.companionLink}
+              onPress={() => { void handleOpenCompanionSetup(); }}
+              accessibilityRole="link"
+              accessibilityLabel="Open the WakeMATE Companion download and setup page"
+            >
+              <Text style={styles.companionLinkText}>Download &amp; Setup</Text>
+              <ExternalLink size={17} color="#ffffff" />
             </TouchableOpacity>
           </View>
 
@@ -546,6 +582,26 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontWeight: '700',
     marginLeft: 8,
+  },
+  companionDescription: {
+    color: '#8aa1ab',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  companionLink: {
+    minHeight: 48,
+    marginTop: 14,
+    borderRadius: 14,
+    backgroundColor: '#0891b2',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  companionLinkText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
   },
   aboutInfo: {
     alignItems: 'center',

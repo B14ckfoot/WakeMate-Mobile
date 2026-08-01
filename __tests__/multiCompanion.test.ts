@@ -6,7 +6,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
-import deviceService from '../src/services/deviceService';
+import deviceService, { PAIRING_APPROVAL_TIMEOUT_MS } from '../src/services/deviceService';
+import {
+  getPendingDeviceEnrollment,
+  setPendingDeviceEnrollment,
+} from '../src/services/companionCredentials';
 import { Device } from '../src/types/device';
 
 const mockedRequest = axios.request as unknown as jest.Mock;
@@ -106,9 +110,44 @@ describe('keeping two computers independent', () => {
 });
 
 describe('completing pairing in one scan', () => {
-  it('falls back to the legacy activation when enrollment fails', async () => {
-    // Previously any non-404 enrollment error aborted pairing outright and the
-    // user was told to "finish it in Settings".
+  it('watches approval for the companion’s full enrollment lifetime', () => {
+    expect(PAIRING_APPROVAL_TIMEOUT_MS).toBe(120_000);
+  });
+
+  it('performs a final approval poll at a non-aligned timeout boundary', async () => {
+    let statusCalls = 0;
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/status')) {
+        statusCalls += 1;
+        return ok({
+          ok: true,
+          data: {
+            approval: statusCalls === 3 ? 'approved' : 'pending',
+            allow_input_commands: false,
+          },
+        });
+      }
+      return ok();
+    });
+
+    jest.useFakeTimers();
+    try {
+      const approval = deviceService.waitForPairingApproval(PC_B.ip, {
+        timeoutMs: 5,
+        intervalMs: 3,
+        deviceId: 'enroll-boundary',
+        localDeviceId: 'pc-b',
+      });
+      await jest.advanceTimersByTimeAsync(5);
+
+      await expect(approval).resolves.toBe('approved');
+      expect(statusCalls).toBe(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('retries a busy enrollment without falling into legacy activation', async () => {
     const busy = new Error('busy') as Error & { isAxiosError: boolean; response: unknown };
     busy.isAxiosError = true;
     busy.response = { status: 429, data: { ok: false, message: 'already waiting' } };
@@ -116,6 +155,46 @@ describe('completing pairing in one scan', () => {
     mockedRequest.mockImplementation(async (config: any) => {
       if (String(config.path ?? config.url).includes('/v1/pairing/enroll')) {
         throw busy;
+      }
+      return ok();
+    });
+
+    jest.useFakeTimers();
+    try {
+      const pairing = deviceService.pairDeviceFromQr('pc-b', {
+        ip: PC_B.ip,
+        token: 'qr-token',
+        timeoutMs: 5000,
+      });
+      await jest.advanceTimersByTimeAsync(3000);
+      const result = await pairing;
+
+      expect(result).toEqual({ status: 'failed', detail: 'already waiting' });
+      const enrollCalls = mockedRequest.mock.calls.filter((call) =>
+        String(call[0].url).includes('/v1/pairing/enroll')
+      );
+      expect(enrollCalls).toHaveLength(2);
+      expect(
+        mockedRequest.mock.calls.some((call) =>
+          String(call[0].url).includes('/v1/pairing/activate')
+        )
+      ).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('uses legacy activation only when enrollment is actually unsupported', async () => {
+    const unsupported = new Error('not found') as Error & {
+      isAxiosError: boolean;
+      response: unknown;
+    };
+    unsupported.isAxiosError = true;
+    unsupported.response = { status: 404, data: { ok: false, message: 'not found' } };
+
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        throw unsupported;
       }
       if (String(config.url).includes('/v1/pairing/status')) {
         return ok({ ok: true, data: { approval: 'approved', allow_input_commands: true } });
@@ -125,18 +204,37 @@ describe('completing pairing in one scan', () => {
 
     const result = await deviceService.pairDeviceFromQr('pc-b', {
       ip: PC_B.ip,
-      token: 'qr-token',
+      token: 'legacy-token',
       timeoutMs: 5000,
     });
 
     expect(result.status).toBe('approved');
-    const activated = mockedRequest.mock.calls.some((call) =>
-      String(call[0].url).includes('/v1/pairing/activate')
-    );
-    expect(activated).toBe(true);
+    expect(
+      mockedRequest.mock.calls.some((call) =>
+        String(call[0].url).includes('/v1/pairing/activate')
+      )
+    ).toBe(true);
   });
 
-  it('keeps the QR token when approval never arrives, rather than a half-swapped one', async () => {
+  it('rejects a malformed enrollment response instead of treating it as legacy', async () => {
+    mockedRequest.mockResolvedValue(ok({ ok: true, data: { device_id: 'missing-token' } }));
+
+    const result = await deviceService.pairDeviceFromQr('pc-b', {
+      ip: PC_B.ip,
+      token: 'qr-token',
+      timeoutMs: 5000,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.detail).toContain('invalid enrollment response');
+    expect(
+      mockedRequest.mock.calls.some((call) =>
+        String(call[0].url).includes('/v1/pairing/activate')
+      )
+    ).toBe(false);
+  });
+
+  it('keeps durable staging after a caller-shortened timeout', async () => {
     mockedRequest.mockImplementation(async (config: any) => {
       if (String(config.url).includes('/v1/pairing/enroll')) {
         return ok({ ok: true, data: { device_id: 'enroll-1', device_token: 'per-device-token' } });
@@ -154,8 +252,47 @@ describe('completing pairing in one scan', () => {
     });
 
     expect(result.status).toBe('timeout');
-    // The per-device token is only adopted on approval.
+    // Ten milliseconds is shorter than the Companion enrollment TTL, so a
+    // later desktop approval is still possible and the staged token must live.
     expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('qr-token');
+    expect(await getPendingDeviceEnrollment('pc-b')).toEqual({
+      enrollmentId: 'enroll-1',
+      deviceToken: 'per-device-token',
+    });
+
+    const statusCalls = mockedRequest.mock.calls.filter((call) =>
+      String(call[0].url).includes('/v1/pairing/status')
+    );
+    expect(statusCalls.length).toBeGreaterThan(0);
+    expect(statusCalls[0][0].headers['x-wakemate-token']).toBe('qr-token');
+  });
+
+  it('clears inert staging after polling through the full enrollment lifetime', async () => {
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        return ok({ ok: true, data: { device_id: 'enroll-expired', device_token: 'expired-token' } });
+      }
+      if (String(config.url).includes('/v1/pairing/status')) {
+        return ok({ ok: true, data: { approval: 'pending', allow_input_commands: false } });
+      }
+      return ok();
+    });
+
+    jest.useFakeTimers();
+    try {
+      const pairing = deviceService.pairDeviceFromQr('pc-b', {
+        ip: PC_B.ip,
+        token: 'qr-token',
+      });
+      await jest.advanceTimersByTimeAsync(PAIRING_APPROVAL_TIMEOUT_MS);
+      const result = await pairing;
+
+      expect(result.status).toBe('timeout');
+      expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('qr-token');
+      expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('adopts the per-device token once the desktop approves', async () => {
@@ -177,6 +314,95 @@ describe('completing pairing in one scan', () => {
 
     expect(result.status).toBe('approved');
     expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('per-device-token');
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('discards a staged token after definite desktop denial and retains the QR token', async () => {
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        return ok({ ok: true, data: { device_id: 'enroll-denied', device_token: 'denied-token' } });
+      }
+      if (String(config.url).includes('/v1/pairing/status')) {
+        return ok({ ok: true, data: { approval: 'denied', allow_input_commands: false } });
+      }
+      return ok();
+    });
+
+    const result = await deviceService.pairDeviceFromQr('pc-b', {
+      ip: PC_B.ip,
+      token: 'qr-token',
+      timeoutMs: 5000,
+    });
+
+    expect(result.status).toBe('denied');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('qr-token');
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('keeps staging after an ambiguous status failure', async () => {
+    const offline = new Error('network unavailable') as Error & {
+      isAxiosError: boolean;
+      response?: unknown;
+    };
+    offline.isAxiosError = true;
+
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        return ok({ ok: true, data: { device_id: 'enroll-offline', device_token: 'offline-token' } });
+      }
+      if (String(config.url).includes('/v1/pairing/status')) {
+        throw offline;
+      }
+      return ok();
+    });
+
+    const result = await deviceService.pairDeviceFromQr('pc-b', {
+      ip: PC_B.ip,
+      token: 'qr-token',
+      timeoutMs: 5000,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('qr-token');
+    expect(await getPendingDeviceEnrollment('pc-b')).toEqual({
+      enrollmentId: 'enroll-offline',
+      deviceToken: 'offline-token',
+    });
+  });
+
+  it('recovers and promotes a staged token after a process interruption', async () => {
+    // This is the durable state left if the OS terminates WakeMATE after the
+    // enroll response but before the polling promise settles.
+    await deviceService.setDeviceCompanionToken('pc-b', 'qr-token');
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-recover',
+      deviceToken: 'recovered-token',
+    });
+
+    mockedRequest.mockReset();
+    mockedRequest.mockResolvedValue(ok({ ok: true, message: 'pairing token accepted' }));
+
+    await deviceService.checkPairing(PC_B.ip, 'pc-b');
+
+    expect(mockedRequest.mock.calls[0][0].headers['x-wakemate-token']).toBe('recovered-token');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('recovered-token');
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('recognizes staged credentials during setup validation after relaunch', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', null);
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-staged-only',
+      deviceToken: 'staged-only-token',
+    });
+
+    await expect(
+      deviceService.getCompanionSetupError({
+        requireToken: true,
+        serverIp: PC_B.ip,
+        deviceId: 'pc-b',
+      })
+    ).resolves.toBeNull();
   });
 
   it('stores the scanned ports against that computer only', async () => {

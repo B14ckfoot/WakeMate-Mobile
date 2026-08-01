@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import deviceService from '../src/services/deviceService';
 import { usePendingWidgetWake } from '../src/widget/pendingWidgetWake';
+import CompanionSetupPrompt from '../src/components/CompanionSetupPrompt';
 
 export default function RootLayout() {
   useEffect(() => {
@@ -18,14 +19,15 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <StatusBar style="light" />
       <ServerProvider>
-        <Stack 
+        <Stack
           screenOptions={{
-          headerShown: false, // We'll handle our own headers in each screen
+            headerShown: false, // We'll handle our own headers in each screen
             contentStyle: {
               backgroundColor: '#05090c',
             }
           }}
         />
+        <CompanionSetupPrompt />
       </ServerProvider>
     </SafeAreaProvider>
   );

@@ -2,7 +2,7 @@
   "expo": {
     "name": "WakeMATE",
     "slug": "wakemate-mobile",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
@@ -11,7 +11,7 @@
       "supportsTablet": true,
       "appleTeamId": "NHGT3Q6R85",
       "bundleIdentifier": "com.anonymous.wakematemobile",
-      "buildNumber": "2",
+      "buildNumber": "4",
       "entitlements": {
         "com.apple.security.application-groups": [
           "group.com.anonymous.wakematemobile"
@@ -30,6 +30,7 @@
       "permissions": [
         "android.permission.CAMERA"
       ],
+      "versionCode": 3,
       "package": "com.anonymous.wakematemobile"
     },
     "web": {

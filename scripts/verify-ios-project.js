@@ -1,11 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const xcode = require('xcode');
+const plist = require('@expo/plist').default;
 const appConfig = require('../app.json');
 
 const root = path.resolve(__dirname, '..');
 const appName = appConfig.expo.name;
 const appBundleIdentifier = appConfig.expo.ios.bundleIdentifier;
+const appVersion = String(appConfig.expo.version);
+const appBuildNumber = String(appConfig.expo.ios.buildNumber);
 const projectFile = path.join(root, 'ios', `${appName}.xcodeproj`, 'project.pbxproj');
 const podfile = path.join(root, 'ios', 'Podfile');
 const podfilePropertiesFile = path.join(root, 'ios', 'Podfile.properties.json');
@@ -153,6 +156,18 @@ for (const expectedTarget of EXPECTED_TARGETS) {
       }
     }
 
+    for (const [setting, expectedValue] of [
+      ['MARKETING_VERSION', appVersion],
+      ['CURRENT_PROJECT_VERSION', appBuildNumber],
+    ]) {
+      const actualValue = normalize(effectiveSettings[setting]);
+      if (actualValue !== expectedValue) {
+        fail(
+          `${expectedTarget.label} ${configurationName} has ${setting}=${actualValue || '<unset>'}; expected ${expectedValue} from app.json`
+        );
+      }
+    }
+
     if (
       expectedTarget.label === 'app' &&
       !normalize(configuration.buildSettings.OTHER_SWIFT_FLAGS).includes(
@@ -164,6 +179,19 @@ for (const expectedTarget of EXPECTED_TARGETS) {
       );
     }
   }
+}
+
+const appInfoPlistFile = path.join(root, 'ios', appName, 'Info.plist');
+const appInfoPlist = plist.parse(fs.readFileSync(appInfoPlistFile, 'utf8'));
+if (String(appInfoPlist.CFBundleShortVersionString) !== appVersion) {
+  fail(
+    `app Info.plist version is ${appInfoPlist.CFBundleShortVersionString}; expected ${appVersion} from app.json`
+  );
+}
+if (String(appInfoPlist.CFBundleVersion) !== appBuildNumber) {
+  fail(
+    `app Info.plist build is ${appInfoPlist.CFBundleVersion}; expected ${appBuildNumber} from app.json`
+  );
 }
 
 const appDelegateFile = path.join(root, 'ios', appName, 'AppDelegate.swift');
@@ -298,5 +326,5 @@ if (fs.existsSync(podsProjectFile)) {
 }
 
 console.log(
-  'Verified iOS-only targets, device Debug bundling, and native warning settings.'
+  'Verified iOS-only targets, release metadata, device Debug bundling, and native warning settings.'
 );
