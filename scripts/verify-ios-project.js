@@ -202,6 +202,16 @@ if (
 ) {
   fail('AppDelegate does not select the embedded bundle for physical-device Debug builds');
 }
+for (const requiredSnippet of [
+  'private final class WakeMatePhysicalDebugWindow: UIWindow',
+  'if motion == .motionShake',
+  '#if DEBUG && os(iOS) && !targetEnvironment(simulator)',
+  'window = WakeMatePhysicalDebugWindow(frame: UIScreen.main.bounds)',
+]) {
+  if (!appDelegate.includes(requiredSnippet)) {
+    fail(`AppDelegate does not suppress the physical-device Debug shake menu: ${requiredSnippet}`);
+  }
+}
 
 const bundlePhase = Object.entries(objects.PBXShellScriptBuildPhase ?? {})
   .filter(([key, value]) => !key.endsWith('_comment') && value)

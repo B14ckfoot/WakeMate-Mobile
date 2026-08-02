@@ -5,7 +5,7 @@ const {
 } = require('@expo/config-plugins');
 
 const pluginName = 'with-physical-device-debug-bundle';
-const pluginVersion = '1.0.0';
+const pluginVersion = '1.1.0';
 
 const DEFAULT_DEBUG_BUNDLE_URL = `#if DEBUG
     return RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: ".expo/.virtual-metro-entry")
@@ -19,6 +19,28 @@ const DEVICE_DEBUG_BUNDLE_URL = `#if DEBUG
         ?? RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: ".expo/.virtual-metro-entry")
     #endif
 #else`;
+
+const APP_DELEGATE_CLASS_ANCHOR = '@UIApplicationMain';
+const PHYSICAL_DEBUG_WINDOW_CLASS = `#if DEBUG && os(iOS) && !targetEnvironment(simulator)
+private final class WakeMatePhysicalDebugWindow: UIWindow {
+  override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+    if motion == .motionShake {
+      return
+    }
+
+    super.motionEnded(motion, with: event)
+  }
+}
+#endif
+
+@UIApplicationMain`;
+
+const DEFAULT_WINDOW_CREATION = '    window = UIWindow(frame: UIScreen.main.bounds)';
+const PHYSICAL_DEBUG_WINDOW_CREATION = `#if DEBUG && os(iOS) && !targetEnvironment(simulator)
+    window = WakeMatePhysicalDebugWindow(frame: UIScreen.main.bounds)
+#else
+    window = UIWindow(frame: UIScreen.main.bounds)
+#endif`;
 
 const FIXED_BUNDLE_SCRIPT = `if [[ -f "$PODS_ROOT/../.xcode.env" ]]; then
   source "$PODS_ROOT/../.xcode.env"
@@ -75,20 +97,40 @@ const withPhysicalDeviceDebugBundle = (config) => {
       throw new Error('withPhysicalDeviceDebugBundle: expected a Swift AppDelegate');
     }
 
-    const { contents } = configWithAppDelegate.modResults;
-    if (contents.includes(DEVICE_DEBUG_BUNDLE_URL)) {
-      return configWithAppDelegate;
-    }
-    if (!contents.includes(DEFAULT_DEBUG_BUNDLE_URL)) {
-      throw new Error(
-        'withPhysicalDeviceDebugBundle: could not find the generated bundleURL implementation'
-      );
+    let { contents } = configWithAppDelegate.modResults;
+    if (!contents.includes(DEVICE_DEBUG_BUNDLE_URL)) {
+      if (!contents.includes(DEFAULT_DEBUG_BUNDLE_URL)) {
+        throw new Error(
+          'withPhysicalDeviceDebugBundle: could not find the generated bundleURL implementation'
+        );
+      }
+
+      contents = contents.replace(DEFAULT_DEBUG_BUNDLE_URL, DEVICE_DEBUG_BUNDLE_URL);
     }
 
-    configWithAppDelegate.modResults.contents = contents.replace(
-      DEFAULT_DEBUG_BUNDLE_URL,
-      DEVICE_DEBUG_BUNDLE_URL
-    );
+    // Physical-device Debug builds run an embedded production JS bundle, so
+    // Metro cannot service React Native's shake menu. Swallow only that shake
+    // gesture; simulator Debug and every Release build keep their normal
+    // behavior.
+    if (!contents.includes(PHYSICAL_DEBUG_WINDOW_CLASS)) {
+      if (!contents.includes(APP_DELEGATE_CLASS_ANCHOR)) {
+        throw new Error(
+          'withPhysicalDeviceDebugBundle: could not find the AppDelegate class anchor'
+        );
+      }
+      contents = contents.replace(APP_DELEGATE_CLASS_ANCHOR, PHYSICAL_DEBUG_WINDOW_CLASS);
+    }
+
+    if (!contents.includes(PHYSICAL_DEBUG_WINDOW_CREATION)) {
+      if (!contents.includes(DEFAULT_WINDOW_CREATION)) {
+        throw new Error(
+          'withPhysicalDeviceDebugBundle: could not find the generated UIWindow creation'
+        );
+      }
+      contents = contents.replace(DEFAULT_WINDOW_CREATION, PHYSICAL_DEBUG_WINDOW_CREATION);
+    }
+
+    configWithAppDelegate.modResults.contents = contents;
     return configWithAppDelegate;
   });
 

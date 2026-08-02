@@ -42,7 +42,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react-native';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   GestureHandlerRootView,
   PanGestureHandler,
@@ -63,11 +63,17 @@ import {
   inferDevicePlatformFromMetadata,
   normalizeDevicePlatform,
 } from '../../../src/utils/devicePlatform';
+import { useFocusedPolling } from '../../../src/hooks/useFocusedPolling';
 
 type ControlTab = 'mouse' | 'keyboard' | 'keys' | 'media' | 'power';
 type FeedbackTone = 'info' | 'success' | 'warning';
 type ActionFeedback = { message: string; tone: FeedbackTone };
-type LoadOptions = { showLoader?: boolean; refreshStatus?: boolean };
+type LoadOptions = {
+  showLoader?: boolean;
+  showStatusIndicator?: boolean;
+  refreshStatus?: boolean;
+  reportError?: boolean;
+};
 type QuickKey = { label: string; keyValue: string; wide?: boolean };
 type KeyboardAccessoryMode = 'modifiers' | 'functions' | null;
 type ControlSettings = {
@@ -91,6 +97,7 @@ const SCROLL_SPEED_MIN = 0.45;
 const SCROLL_SPEED_MAX = 2.4;
 const CONTROL_SETTINGS_STORAGE_KEY = 'deviceControlRemoteSettings';
 const CONTROL_KEEP_AWAKE_TAG = 'DeviceControlRemote';
+const CONTROL_STATUS_POLL_INTERVAL_MS = 5000;
 
 type TouchpadMode = 'pointer' | 'scroll';
 type TwoFingerTapCandidate = {
@@ -393,15 +400,17 @@ export default function DeviceControlScreen() {
     feedbackTimeoutRef.current = setTimeout(() => setFeedback(null), 2200);
   }, []);
 
-  const loadDevice = useCallback(async (options?: LoadOptions) => {
+  const loadDevice = useCallback(async (options?: LoadOptions): Promise<Device | null> => {
     const showLoader = options?.showLoader ?? true;
+    const showStatusIndicator = options?.showStatusIndicator ?? true;
     const refreshStatus = options?.refreshStatus ?? true;
+    const reportError = options?.reportError ?? true;
 
     try {
       if (showLoader) {
         setLoading(true);
       }
-      if (refreshStatus) {
+      if (refreshStatus && showStatusIndicator) {
         setIsRefreshingStatus(true);
       }
 
@@ -411,7 +420,7 @@ export default function DeviceControlScreen() {
       if (!foundDevice) {
         Alert.alert('Error', 'Device not found');
         router.back();
-        return;
+        return null;
       }
 
       setDevice(foundDevice);
@@ -436,25 +445,40 @@ export default function DeviceControlScreen() {
         nextDevice = { ...foundDevice, status: nextStatus };
         setDevice(nextDevice);
         setStatus(nextStatus);
-        await deviceService.saveDevices(
-          devices.map((entry) => (entry.id === foundDevice.id ? nextDevice : entry))
-        );
+        await deviceService.updateDeviceStatuses([
+          { id: foundDevice.id, status: nextStatus },
+        ]);
       }
 
       setSetupMessage(companionSetupError);
+      return nextDevice;
     } catch (error) {
       console.error('Error loading device:', error);
-      Alert.alert('Error', 'Failed to load device');
+      if (reportError) {
+        Alert.alert('Error', 'Failed to load device');
+      }
+      return null;
     } finally {
       setLoading(false);
-      setIsRefreshingStatus(false);
+      if (showStatusIndicator) {
+        setIsRefreshingStatus(false);
+      }
     }
   }, [id, router]);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadDevice({ showLoader: true, refreshStatus: true });
-    }, [loadDevice])
+  useFocusedPolling(
+    useCallback(
+      async (reason) => {
+        await loadDevice({
+          showLoader: reason === 'focus',
+          showStatusIndicator: reason !== 'interval',
+          refreshStatus: true,
+          reportError: reason === 'focus',
+        });
+      },
+      [loadDevice]
+    ),
+    CONTROL_STATUS_POLL_INTERVAL_MS
   );
 
   useEffect(() => {
@@ -844,7 +868,12 @@ export default function DeviceControlScreen() {
 
   const handleRefreshStatus = useCallback(() => {
     triggerHaptic('selection');
-    void loadDevice({ showLoader: false, refreshStatus: true });
+    void loadDevice({
+      showLoader: false,
+      showStatusIndicator: true,
+      refreshStatus: true,
+      reportError: true,
+    });
   }, [loadDevice, triggerHaptic]);
 
   const handleMouseClick = useCallback((button: 'left' | 'middle' | 'right') => {

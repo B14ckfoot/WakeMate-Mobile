@@ -37,6 +37,14 @@ const PC_B: Device = {
   ip: '10.0.0.42',
 };
 
+const PC_C: Device = {
+  ...PC_A,
+  id: 'pc-c',
+  name: 'EDITING',
+  mac: '11:22:33:44:55:66',
+  ip: '10.0.0.77',
+};
+
 const ok = (data: unknown = { ok: true, message: 'ok' }) => ({ status: 200, headers: {}, data });
 
 beforeEach(async () => {
@@ -98,6 +106,22 @@ describe('keeping two computers independent', () => {
 
     expect(await deviceService.getDeviceCompanionToken('pc-b')).toBeNull();
     expect(await deviceService.getDeviceCompanionToken('pc-a')).toBe('token-a');
+  });
+
+  it('merges slow status results without undoing a newer add or delete', async () => {
+    // A health poll began with A + B. Before it returned, B was deleted and C
+    // was added. Applying the stale result must update A only.
+    await deviceService.saveDevices([PC_A, PC_C]);
+
+    const merged = await deviceService.updateDeviceStatuses([
+      { id: 'pc-a', status: 'offline' },
+      { id: 'pc-b', status: 'online' },
+    ]);
+
+    expect(merged.map((device) => device.id)).toEqual(['pc-a', 'pc-c']);
+    expect(merged.find((device) => device.id === 'pc-a')?.status).toBe('offline');
+    expect(merged.find((device) => device.id === 'pc-c')?.name).toBe('EDITING');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBeNull();
   });
 
   it('reports an unpaired computer without borrowing another’s token', async () => {
@@ -403,6 +427,218 @@ describe('completing pairing in one scan', () => {
         deviceId: 'pc-b',
       })
     ).resolves.toBeNull();
+  });
+
+  it('reports a resumed enrollment as pending without testing its staged token', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'qr-token-pending-resume');
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-pending-resume',
+      deviceToken: 'staged-token-pending-resume',
+    });
+    mockedRequest.mockReset();
+    mockedRequest.mockResolvedValue(ok({
+      ok: true,
+      data: {
+        approval: 'pending',
+        allow_input_commands: false,
+        allow_power_commands: false,
+      },
+    }));
+
+    const setupError = await deviceService.getCompanionSetupError({
+      requireToken: true,
+      validateToken: true,
+      serverIp: PC_B.ip,
+      deviceId: 'pc-b',
+    });
+
+    expect(setupError).toContain('waiting for approval');
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+    expect(mockedRequest.mock.calls[0][0].url).toContain(
+      '/v1/pairing/status?device_id=enroll-pending-resume'
+    );
+    expect(mockedRequest.mock.calls[0][0].headers['x-wakemate-token']).toBe(
+      'qr-token-pending-resume'
+    );
+    expect(await getPendingDeviceEnrollment('pc-b')).not.toBeNull();
+  });
+
+  it('promotes a resumed enrollment after the companion reports durable approval', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'qr-token-approved-resume');
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-approved-resume',
+      deviceToken: 'staged-token-approved-resume',
+    });
+    mockedRequest.mockReset();
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/status')) {
+        return ok({
+          ok: true,
+          data: {
+            approval: 'approved',
+            allow_input_commands: true,
+            allow_power_commands: true,
+          },
+        });
+      }
+      return ok({ ok: true, message: 'pairing token accepted' });
+    });
+
+    await expect(deviceService.getCompanionSetupError({
+      requireToken: true,
+      validateToken: true,
+      serverIp: PC_B.ip,
+      deviceId: 'pc-b',
+    })).resolves.toBeNull();
+
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+    expect(mockedRequest.mock.calls[0][0].url).toContain('/v1/pairing/status');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe(
+      'staged-token-approved-resume'
+    );
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('recovers an approved staged token when the old QR status session is gone', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'expired-qr-status-token');
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-approved-before-restart',
+      deviceToken: 'staged-token-after-restart',
+    });
+    const unauthorized = new Error('unauthorized') as Error & {
+      isAxiosError: boolean;
+      response: unknown;
+    };
+    unauthorized.isAxiosError = true;
+    unauthorized.response = { status: 401, data: { ok: false, message: 'unauthorized' } };
+
+    mockedRequest.mockReset();
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/status')) {
+        throw unauthorized;
+      }
+      return ok({ ok: true, message: 'pairing token accepted' });
+    });
+
+    await expect(deviceService.getCompanionSetupError({
+      requireToken: true,
+      validateToken: true,
+      serverIp: PC_B.ip,
+      deviceId: 'pc-b',
+    })).resolves.toBeNull();
+
+    const checkCall = mockedRequest.mock.calls.find((call) =>
+      String(call[0].url).includes('/v1/pairing/check')
+    );
+    expect(checkCall?.[0].headers['x-wakemate-token']).toBe('staged-token-after-restart');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('staged-token-after-restart');
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('clears a resumed enrollment after definite desktop denial', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'qr-token-denied-resume');
+    await setPendingDeviceEnrollment('pc-b', {
+      enrollmentId: 'enroll-denied-resume',
+      deviceToken: 'staged-token-denied-resume',
+    });
+    const unauthorized = new Error('unauthorized') as Error & {
+      isAxiosError: boolean;
+      response: unknown;
+    };
+    unauthorized.isAxiosError = true;
+    unauthorized.response = { status: 401, data: { ok: false, message: 'unauthorized' } };
+
+    mockedRequest.mockReset();
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/status')) {
+        return ok({
+          ok: true,
+          data: {
+            approval: 'denied',
+            allow_input_commands: false,
+            allow_power_commands: false,
+          },
+        });
+      }
+      if (String(config.url).includes('/v1/pairing/check')) {
+        throw unauthorized;
+      }
+      if (String(config.url).includes('/v1/health')) {
+        return ok({
+          ok: true,
+          data: { status: 'online', version: '0.2.3', protocol_version: 4 },
+        });
+      }
+      return ok();
+    });
+
+    const setupError = await deviceService.getCompanionSetupError({
+      requireToken: true,
+      validateToken: true,
+      serverIp: PC_B.ip,
+      deviceId: 'pc-b',
+    });
+
+    expect(setupError).toContain('Pairing token was rejected');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('qr-token-denied-resume');
+    expect(await getPendingDeviceEnrollment('pc-b')).toBeNull();
+  });
+
+  it('identifies a reboot-unsafe companion instead of asking for repeated re-scans', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'stale-v021-token');
+    await setPendingDeviceEnrollment('pc-b', null);
+    const unauthorized = new Error('unauthorized') as Error & {
+      isAxiosError: boolean;
+      response: unknown;
+    };
+    unauthorized.isAxiosError = true;
+    unauthorized.response = { status: 401, data: { ok: false, message: 'unauthorized' } };
+
+    mockedRequest.mockReset();
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/check')) {
+        throw unauthorized;
+      }
+      if (String(config.url).includes('/v1/health')) {
+        return ok({
+          ok: true,
+          data: { status: 'online', version: '0.2.1', protocol_version: 4 },
+        });
+      }
+      return ok();
+    });
+
+    const setupError = await deviceService.getCompanionSetupError({
+      requireToken: true,
+      validateToken: true,
+      serverIp: PC_B.ip,
+      deviceId: 'pc-b',
+    });
+
+    expect(setupError).toContain('Companion 0.2.1');
+    expect(setupError).toContain('Install Companion 0.2.3 or newer');
+  });
+
+  it('caches a rejected token briefly so background polling cannot cause lockout', async () => {
+    await deviceService.setDeviceCompanionToken('pc-b', 'rejected-cache-token');
+    await setPendingDeviceEnrollment('pc-b', null);
+    const unauthorized = new Error('unauthorized') as Error & {
+      isAxiosError: boolean;
+      response: unknown;
+    };
+    unauthorized.isAxiosError = true;
+    unauthorized.response = { status: 401, data: { ok: false, message: 'unauthorized' } };
+    mockedRequest.mockReset();
+    mockedRequest.mockRejectedValue(unauthorized);
+
+    await expect(deviceService.checkPairing(PC_B.ip, 'pc-b')).rejects.toThrow(
+      'Pairing token was rejected'
+    );
+    await expect(deviceService.checkPairing(PC_B.ip, 'pc-b')).rejects.toThrow(
+      'Pairing token was rejected'
+    );
+
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
   });
 
   it('stores the scanned ports against that computer only', async () => {

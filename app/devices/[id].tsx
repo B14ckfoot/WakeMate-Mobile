@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +13,17 @@ import { ArrowLeft, Edit, Monitor, Power, RefreshCw, Settings, Trash2 } from 'lu
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
+import { useFocusedPolling } from '../../src/hooks/useFocusedPolling';
+
+const DEVICE_STATUS_POLL_INTERVAL_MS = 5000;
+const WAKE_STATUS_POLL_INTERVAL_MS = 2000;
+const WAKE_CONTROL_TIMEOUT_MS = 120000;
+
+type LoadDeviceOptions = {
+  showLoader?: boolean;
+  showStatusIndicator?: boolean;
+  reportError?: boolean;
+};
 
 export default function DeviceDetailScreen() {
   const params = useLocalSearchParams();
@@ -24,52 +35,135 @@ export default function DeviceDetailScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshingStatus, setIsRefreshingStatus] = useState(false);
   const [isWaking, setIsWaking] = useState(false);
+  const [isAwaitingControl, setIsAwaitingControl] = useState(false);
+  const isAwaitingControlRef = useRef(false);
+  const wakeControlDeadlineRef = useRef<number | null>(null);
+  const isScreenFocusedRef = useRef(false);
+  const focusGenerationRef = useRef(0);
 
-  const loadDevice = useCallback(async (refreshStatus: boolean = true) => {
+  const stopAwaitingControl = useCallback(() => {
+    isAwaitingControlRef.current = false;
+    wakeControlDeadlineRef.current = null;
+    setIsAwaitingControl(false);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      isScreenFocusedRef.current = true;
+      focusGenerationRef.current += 1;
+      stopAwaitingControl();
+      setIsWaking(false);
+
+      return () => {
+        isScreenFocusedRef.current = false;
+        focusGenerationRef.current += 1;
+        isAwaitingControlRef.current = false;
+        wakeControlDeadlineRef.current = null;
+      };
+    }, [stopAwaitingControl])
+  );
+
+  const loadDevice = useCallback(async (
+    options: LoadDeviceOptions = {}
+  ): Promise<Device | null> => {
+    const requestGeneration = focusGenerationRef.current;
+    const isCurrentRequest = () =>
+      isScreenFocusedRef.current && focusGenerationRef.current === requestGeneration;
+    const showLoader = options.showLoader ?? true;
+    const showStatusIndicator = options.showStatusIndicator ?? true;
+    const reportError = options.reportError ?? true;
+
     try {
-      setIsLoading(true);
+      if (showLoader) {
+        setIsLoading(true);
+      }
+      if (showStatusIndicator) {
+        setIsRefreshingStatus(true);
+      }
+
       const devices = await deviceService.getDevices();
+      if (!isCurrentRequest()) {
+        return null;
+      }
+
       const foundDevice = devices.find((entry: Device) => entry.id === id);
 
       if (!foundDevice) {
         Alert.alert('Error', 'Device not found');
         router.back();
-        return;
+        return null;
       }
 
       let nextDevice = foundDevice;
+      const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip, foundDevice.id);
+      if (!isCurrentRequest()) {
+        return null;
+      }
 
-      if (refreshStatus) {
-        setIsRefreshingStatus(true);
-        const isOnline = await deviceService.checkDeviceStatus(foundDevice.ip, foundDevice.id);
-        const nextStatus = isOnline ? 'online' : 'offline';
+      const nextStatus = isOnline ? 'online' : 'offline';
 
-        if (nextStatus !== foundDevice.status) {
-          nextDevice = {
-            ...foundDevice,
-            status: nextStatus,
-          };
+      if (nextStatus !== foundDevice.status) {
+        nextDevice = {
+          ...foundDevice,
+          status: nextStatus,
+        };
 
-          const updatedDevices = devices.map((entry) => (entry.id === foundDevice.id ? nextDevice : entry));
-          await deviceService.saveDevices(updatedDevices);
+        await deviceService.updateDeviceStatuses([
+          { id: foundDevice.id, status: nextStatus },
+        ]);
+        if (!isCurrentRequest()) {
+          return null;
         }
       }
 
       setDevice(nextDevice);
       setStatus(nextDevice.status);
+
+      if (nextStatus === 'online' && isAwaitingControlRef.current) {
+        stopAwaitingControl();
+        router.replace(`/devices/control/${foundDevice.id}`);
+      } else if (
+        nextStatus === 'offline' &&
+        isAwaitingControlRef.current &&
+        wakeControlDeadlineRef.current !== null &&
+        Date.now() >= wakeControlDeadlineRef.current
+      ) {
+        stopAwaitingControl();
+        Alert.alert(
+          'PC Still Offline',
+          'WakeMATE did not find the companion after two minutes. You can send another wake signal or check that the companion starts after sign-in.'
+        );
+      }
+
+      return nextDevice;
     } catch (error) {
       console.error('Error loading device:', error);
-      Alert.alert('Error', 'Failed to load device details');
+      if (reportError && isCurrentRequest()) {
+        Alert.alert('Error', 'Failed to load device details');
+      }
+      return null;
     } finally {
-      setIsLoading(false);
-      setIsRefreshingStatus(false);
+      if (isCurrentRequest()) {
+        setIsLoading(false);
+        if (showStatusIndicator) {
+          setIsRefreshingStatus(false);
+        }
+      }
     }
-  }, [id, router]);
+  }, [id, router, stopAwaitingControl]);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadDevice(true);
-    }, [loadDevice])
+  useFocusedPolling(
+    useCallback(
+      async (reason) => {
+        await loadDevice({
+          showLoader: reason === 'focus',
+          showStatusIndicator: reason !== 'interval',
+          reportError: reason === 'focus',
+        });
+      },
+      [loadDevice]
+    ),
+    isAwaitingControl ? WAKE_STATUS_POLL_INTERVAL_MS : DEVICE_STATUS_POLL_INTERVAL_MS
   );
 
   const handleDelete = () => {
@@ -94,6 +188,11 @@ export default function DeviceDetailScreen() {
   };
 
   const handlePrimaryAction = async () => {
+    if (isAwaitingControl) {
+      stopAwaitingControl();
+      return;
+    }
+
     if (!device) {
       return;
     }
@@ -108,24 +207,32 @@ export default function DeviceDetailScreen() {
       return;
     }
 
+    const actionGeneration = focusGenerationRef.current;
+    const isCurrentAction = () =>
+      isScreenFocusedRef.current && focusGenerationRef.current === actionGeneration;
+
     try {
       setIsWaking(true);
-      const result = await deviceService.wakeMachine(device);
-      Alert.alert('Wake Signal Sent', `${result?.message ?? 'Wake-on-LAN packet sent.'}`, [
-        {
-          text: 'Refresh Status',
-          onPress: () => loadDevice(true),
-        },
-        {
-          text: 'OK',
-          style: 'default',
-        },
-      ]);
+      await deviceService.wakeMachine(device);
+      if (!isCurrentAction()) {
+        return;
+      }
+
+      // The companion is not reachable during boot. Keep checking the real
+      // health endpoint and open the remote only after it answers online.
+      isAwaitingControlRef.current = true;
+      wakeControlDeadlineRef.current = Date.now() + WAKE_CONTROL_TIMEOUT_MS;
+      setIsAwaitingControl(true);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to send the wake signal';
-      Alert.alert('Wake Failed', message);
+      if (isCurrentAction()) {
+        stopAwaitingControl();
+        const message = error instanceof Error ? error.message : 'Failed to send the wake signal';
+        Alert.alert('Wake Failed', message);
+      }
     } finally {
-      setIsWaking(false);
+      if (isCurrentAction()) {
+        setIsWaking(false);
+      }
     }
   };
 
@@ -176,7 +283,11 @@ export default function DeviceDetailScreen() {
 
             <TouchableOpacity
               style={styles.headerButton}
-              onPress={() => loadDevice(true)}
+              onPress={() => loadDevice({
+                showLoader: false,
+                showStatusIndicator: true,
+                reportError: true,
+              })}
               disabled={isRefreshingStatus}
             >
               <RefreshCw size={20} color="#0891b2" />
@@ -205,7 +316,13 @@ export default function DeviceDetailScreen() {
                   { color: status === 'online' ? '#4ade80' : '#d1d5db' },
                 ]}
               >
-                {isRefreshingStatus ? 'Checking status...' : status === 'online' ? 'Online' : 'Offline'}
+                {isAwaitingControl
+                  ? 'Starting up… opening controls when ready'
+                  : isRefreshingStatus
+                    ? 'Checking status...'
+                    : status === 'online'
+                      ? 'Online'
+                      : 'Offline'}
               </Text>
             </View>
 
@@ -227,6 +344,7 @@ export default function DeviceDetailScreen() {
             </View>
 
             <TouchableOpacity
+              testID="device-primary-action"
               style={[
                 styles.primaryButton,
                 status === 'offline' && styles.wakeButton,
@@ -242,9 +360,17 @@ export default function DeviceDetailScreen() {
                 </>
               ) : (
                 <>
-                  <Power size={20} color="#ffffff" />
+                  {isAwaitingControl ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <Power size={20} color="#ffffff" />
+                  )}
                   <Text style={[styles.primaryButtonText, styles.buttonTextWithIcon]}>
-                    {isWaking ? 'Sending Wake Signal...' : 'Wake Device'}
+                    {isWaking
+                      ? 'Sending Wake Signal...'
+                      : isAwaitingControl
+                        ? 'Stop Waiting'
+                        : 'Wake Device'}
                   </Text>
                 </>
               )}

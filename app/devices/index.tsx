@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
 import SwipeableDeviceItem from '../../src/components/SwipeableDeviceItem';
+import { useFocusedPolling } from '../../src/hooks/useFocusedPolling';
+
+const DEVICE_STATUS_POLL_INTERVAL_MS = 5000;
 
 export default function DevicesScreen() {
   const router = useRouter();
@@ -24,14 +27,34 @@ export default function DevicesScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRefreshingStatuses, setIsRefreshingStatuses] = useState(false);
+  const isScreenFocusedRef = useRef(false);
+  const navigationRequestRef = useRef(0);
+  const pendingDeviceNavigationRef = useRef<string | null>(null);
 
-  const refreshDeviceStatuses = useCallback(async (deviceList: Device[]) => {
+  useFocusEffect(
+    useCallback(() => {
+      isScreenFocusedRef.current = true;
+
+      return () => {
+        isScreenFocusedRef.current = false;
+        navigationRequestRef.current += 1;
+        pendingDeviceNavigationRef.current = null;
+      };
+    }, [])
+  );
+
+  const refreshDeviceStatuses = useCallback(async (
+    deviceList: Device[],
+    showIndicator: boolean = true
+  ) => {
     if (deviceList.length === 0) {
       setDevices([]);
       return [];
     }
 
-    setIsRefreshingStatuses(true);
+    if (showIndicator) {
+      setIsRefreshingStatuses(true);
+    }
 
     try {
       const statusResults = await Promise.allSettled(
@@ -44,19 +67,17 @@ export default function DevicesScreen() {
         })
       );
 
-      const nextDevices = statusResults.map((result, index) =>
+      const checkedDevices = statusResults.map((result, index) =>
         result.status === 'fulfilled' ? result.value : deviceList[index]
       );
 
-      setDevices(nextDevices);
-
-      const statusesChanged = nextDevices.some(
-        (device, index) => device.status !== deviceList[index]?.status
+      // Merge only the derived status fields into whatever list is current
+      // now. A poll that started before an add/delete must not overwrite that
+      // newer user action when its network requests finish.
+      const nextDevices = await deviceService.updateDeviceStatuses(
+        checkedDevices.map(({ id, status }) => ({ id, status }))
       );
-
-      if (statusesChanged) {
-        await deviceService.saveDevices(nextDevices);
-      }
+      setDevices(nextDevices);
 
       return nextDevices;
     } catch (error) {
@@ -64,18 +85,27 @@ export default function DevicesScreen() {
       setDevices(deviceList);
       return deviceList;
     } finally {
-      setIsRefreshingStatuses(false);
+      if (showIndicator) {
+        setIsRefreshingStatuses(false);
+      }
     }
   }, []);
 
-  const loadDevices = useCallback(async (options?: { showSpinner?: boolean; refreshStatuses?: boolean }) => {
+  const loadDevices = useCallback(async (options?: {
+    showSpinner?: boolean;
+    showRefreshIndicator?: boolean;
+    refreshStatuses?: boolean;
+    reportError?: boolean;
+  }) => {
     const showSpinner = options?.showSpinner ?? true;
+    const showRefreshIndicator = options?.showRefreshIndicator ?? !showSpinner;
     const refreshStatuses = options?.refreshStatuses ?? true;
+    const reportError = options?.reportError ?? true;
 
     try {
       if (showSpinner) {
         setIsLoading(true);
-      } else {
+      } else if (showRefreshIndicator) {
         setIsRefreshing(true);
       }
 
@@ -83,21 +113,32 @@ export default function DevicesScreen() {
       setDevices(loadedDevices);
 
       if (refreshStatuses) {
-        await refreshDeviceStatuses(loadedDevices);
+        await refreshDeviceStatuses(loadedDevices, showSpinner || showRefreshIndicator);
       }
     } catch (error) {
       console.error('Error loading devices:', error);
-      Alert.alert('Error', 'Failed to load your devices');
+      if (reportError) {
+        Alert.alert('Error', 'Failed to load your devices');
+      }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
   }, [refreshDeviceStatuses]);
 
-  useFocusEffect(
-    useCallback(() => {
-      loadDevices({ showSpinner: true, refreshStatuses: true });
-    }, [loadDevices])
+  useFocusedPolling(
+    useCallback(
+      async (reason) => {
+        await loadDevices({
+          showSpinner: reason === 'focus',
+          showRefreshIndicator: false,
+          refreshStatuses: true,
+          reportError: reason === 'focus',
+        });
+      },
+      [loadDevices]
+    ),
+    DEVICE_STATUS_POLL_INTERVAL_MS
   );
 
   const handleDeleteDevice = (id: string) => {
@@ -141,20 +182,43 @@ export default function DevicesScreen() {
     ]);
   };
 
-  const handlePressDevice = useCallback((device: Device) => {
-    if (device.status === 'online') {
-      router.push(`/devices/control/${device.id}`);
+  const handlePressDevice = useCallback(async (device: Device) => {
+    if (pendingDeviceNavigationRef.current === device.id) {
       return;
     }
 
-    router.push(`/devices/${device.id}`);
+    const requestId = navigationRequestRef.current + 1;
+    navigationRequestRef.current = requestId;
+    pendingDeviceNavigationRef.current = device.id;
+
+    // Do not route from a five-second-old list snapshot. One last inexpensive
+    // health check closes the race where the PC finishes booting just as the
+    // user taps it.
+    try {
+      const isOnline = await deviceService.checkDeviceStatus(device.ip, device.id);
+      if (!isScreenFocusedRef.current || navigationRequestRef.current !== requestId) {
+        return;
+      }
+
+      // Invalidate this request before changing routes so a second completion
+      // cannot append another screen to the navigation stack.
+      navigationRequestRef.current += 1;
+      pendingDeviceNavigationRef.current = null;
+      router.push(isOnline ? `/devices/control/${device.id}` : `/devices/${device.id}`);
+    } catch (error) {
+      if (isScreenFocusedRef.current && navigationRequestRef.current === requestId) {
+        pendingDeviceNavigationRef.current = null;
+        console.error('Error checking device before navigation:', error);
+        Alert.alert('Connection Check Failed', 'Could not check this PC. Please try again.');
+      }
+    }
   }, [router]);
 
   const renderDevice = ({ item }: { item: Device }) => (
     <SwipeableDeviceItem
       device={item}
       onDelete={handleDeleteDevice}
-      onPress={handlePressDevice}
+      onPress={(device) => { void handlePressDevice(device); }}
       onLongPress={handleLongPress}
     />
   );
@@ -216,7 +280,11 @@ export default function DevicesScreen() {
             refreshControl={
               <RefreshControl
                 refreshing={isRefreshing || isRefreshingStatuses}
-                onRefresh={() => loadDevices({ showSpinner: false, refreshStatuses: true })}
+                onRefresh={() => loadDevices({
+                  showSpinner: false,
+                  showRefreshIndicator: true,
+                  refreshStatuses: true,
+                })}
                 tintColor="#0891b2"
               />
             }
@@ -228,7 +296,11 @@ export default function DevicesScreen() {
 
                 <TouchableOpacity
                   style={styles.refreshButton}
-                  onPress={() => loadDevices({ showSpinner: false, refreshStatuses: true })}
+                  onPress={() => loadDevices({
+                    showSpinner: false,
+                    showRefreshIndicator: true,
+                    refreshStatuses: true,
+                  })}
                   disabled={isRefreshing || isRefreshingStatuses}
                 >
                   <RefreshCw size={16} color="#67e8f9" />

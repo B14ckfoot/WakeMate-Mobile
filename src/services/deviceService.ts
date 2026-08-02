@@ -45,6 +45,8 @@ const GLOBAL_BROADCAST_ADDRESS = '255.255.255.255';
 const COMPANION_SERVER_IP_REQUIRED_MESSAGE = 'Companion server IP not set. Re-scan this computer’s pairing QR code from the Devices screen.';
 const COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE = 'Pairing token not set. Scan the pairing QR code shown by the WakeMATE tray icon from the Devices screen.';
 const COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE = 'Pairing token was rejected by the companion. Re-scan its pairing QR code from the Devices screen.';
+const COMPANION_PAIRING_APPROVAL_PENDING_MESSAGE = 'Pairing is waiting for approval on the computer. Choose Allow in the WakeMATE Companion prompt; controls will open automatically.';
+const MINIMUM_REBOOT_SAFE_COMPANION_VERSION = '0.2.3';
 const DISCOVERY_NAME_KEYS = [
   'name',
   'hostname',
@@ -159,6 +161,11 @@ export type CompanionDiscoveryInfo = {
   version: string | null;
   platform: Device['platform'];
 };
+export type CompanionHealthInfo = {
+  online: boolean;
+  version: string | null;
+  protocolVersion: number | null;
+};
 type UnknownRecord = Record<string, unknown>;
 
 const DISCOVERY_SUBNETS = [
@@ -195,7 +202,52 @@ const SECURITY_SCREEN_DETAIL_MAX_CHARS = 240;
 const SECURE_ATTENTION_KEYSTROKE_MESSAGE =
   'Ctrl+Alt+Delete cannot be sent as a keystroke. Use the Windows Security control instead.';
 
-const pairingValidationCache = new Map<string, { expiresAt: number; data: any }>();
+type PairingValidationCacheEntry = {
+  expiresAt: number;
+  data: any | null;
+  error: Error | null;
+};
+
+const pairingValidationCache = new Map<string, PairingValidationCacheEntry>();
+
+// Every device-list write goes through one queue. Status polling merges into
+// the latest stored list inside that queue, so a slow health check can never
+// resurrect a computer that was just deleted (or erase one that was added).
+let deviceStorageWriteTail: Promise<void> = Promise.resolve();
+
+const enqueueDeviceStorageWrite = <T>(operation: () => Promise<T>): Promise<T> => {
+  const result = deviceStorageWriteTail.then(operation, operation);
+  deviceStorageWriteTail = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+};
+
+const parseVersionParts = (value: string | null | undefined): number[] | null => {
+  const match = value?.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  return match ? match.slice(1).map((part) => Number.parseInt(part, 10)) : null;
+};
+
+const isVersionOlderThan = (
+  candidate: string | null | undefined,
+  minimum: string
+): boolean => {
+  const candidateParts = parseVersionParts(candidate);
+  const minimumParts = parseVersionParts(minimum);
+  if (!candidateParts || !minimumParts) {
+    return false;
+  }
+
+  for (let index = 0; index < minimumParts.length; index += 1) {
+    const difference = (candidateParts[index] ?? 0) - (minimumParts[index] ?? 0);
+    if (difference !== 0) {
+      return difference < 0;
+    }
+  }
+
+  return false;
+};
 
 const buildWakeAddresses = (device: Pick<Device, 'ip' | 'wakeAddress'>): string[] => {
   const configuredWakeAddress = device.wakeAddress?.trim() || '';
@@ -1322,20 +1374,15 @@ const deviceService = {
   ): Promise<string | null> {
     const requireToken = options.requireToken ?? true;
     const deviceId = options.deviceId?.trim() || null;
-    const [serverIp, token] = await Promise.all([
+    const [serverIp, pendingEnrollment, storedDeviceToken, legacyToken] = await Promise.all([
       options.serverIp ? Promise.resolve(options.serverIp) : this.getServerAddress(),
+      deviceId ? getPendingDeviceEnrollment(deviceId) : Promise.resolve(null),
+      deviceId ? getDeviceToken(deviceId) : Promise.resolve(null),
       // Fall back to the legacy shared token so an unmigrated setup still
       // reports itself as paired.
-      deviceId
-        ? Promise.all([
-            getPendingDeviceEnrollment(deviceId),
-            getDeviceToken(deviceId),
-          ]).then(
-            ([pendingEnrollment, storedToken]) =>
-              pendingEnrollment?.deviceToken ?? storedToken ?? this.getServerToken()
-          )
-        : this.getServerToken(),
+      this.getServerToken(),
     ]);
+    const token = pendingEnrollment?.deviceToken ?? storedDeviceToken ?? legacyToken;
 
     if (!normalizeStoredValue(serverIp)) {
       return COMPANION_SERVER_IP_REQUIRED_MESSAGE;
@@ -1346,13 +1393,66 @@ const deviceService = {
     }
 
     if (options.validateToken && requireToken) {
+      // An enrollment token is intentionally unauthorized until the person at
+      // the PC approves it. On resume/relaunch, query the enrollment with the
+      // retained QR credential first so a legitimate pending prompt is not
+      // mislabeled as a rejected token (and repeatedly counted by lockout).
+      if (deviceId && pendingEnrollment) {
+        const statusToken = normalizeStoredValue(storedDeviceToken ?? legacyToken);
+        if (statusToken) {
+          try {
+            const pairingStatus = await this.getPairingStatus(
+              serverIp ?? undefined,
+              pendingEnrollment.enrollmentId,
+              deviceId,
+              statusToken
+            );
+
+            if (pairingStatus?.approval === 'approved') {
+              await setDeviceToken(deviceId, pendingEnrollment.deviceToken);
+              await clearPendingDeviceEnrollment(deviceId);
+              return null;
+            } else if (
+              pairingStatus?.approval === 'pending' ||
+              pairingStatus?.approval === 'idle' ||
+              pairingStatus?.approval === ''
+            ) {
+              return COMPANION_PAIRING_APPROVAL_PENDING_MESSAGE;
+            } else if (pairingStatus?.approval === 'denied') {
+              await clearPendingDeviceEnrollment(deviceId);
+            }
+          } catch {
+            // The QR session may have expired or the Companion may have
+            // restarted after approval. Fall through and try the staged token:
+            // if it was durably approved, /pairing/check will promote it.
+          }
+        }
+      }
+
       try {
         await this.checkPairing(serverIp ?? undefined, deviceId);
       } catch (error) {
-        return normalizeCompanionRequestError(
+        const normalizedError = normalizeCompanionRequestError(
           error,
           'Unable to verify the pairing token with the companion.'
-        ).message;
+        );
+
+        if (normalizedError.message === COMPANION_PAIRING_TOKEN_REJECTED_MESSAGE) {
+          try {
+            const health = await this.getCompanionHealthInfo(serverIp ?? '', deviceId);
+            if (
+              health.online &&
+              isVersionOlderThan(health.version, MINIMUM_REBOOT_SAFE_COMPANION_VERSION)
+            ) {
+              return `This PC is running WakeMATE Companion ${health.version}, which cannot provide reliable controls after a reboot. Install Companion ${MINIMUM_REBOOT_SAFE_COMPANION_VERSION} or newer on the PC, then re-scan its pairing QR code.`;
+            }
+          } catch {
+            // Keep the original authentication error when health metadata is
+            // unavailable; it is still the most actionable verified result.
+          }
+        }
+
+        return normalizedError.message;
       }
     }
 
@@ -1718,41 +1818,84 @@ const deviceService = {
   },
 
   async saveDevices(devices: Device[]): Promise<void> {
-    try {
-      const normalizedDevices = devices.map((device) => normalizeDevice(device));
-
-      // Deleting a computer happens by filtering this list, in more than one
-      // screen. Pruning here means no caller has to remember to clear the
-      // secrets, and a removed computer never leaves a usable token behind.
-      const previousRaw = await AsyncStorage.getItem('devices');
-      const survivingIds = new Set(normalizedDevices.map((device) => device.id));
-      let removedIds: string[] = [];
+    return enqueueDeviceStorageWrite(async () => {
       try {
-        const previous = previousRaw ? JSON.parse(previousRaw) : [];
-        if (Array.isArray(previous)) {
-          removedIds = previous
-            .filter((entry) => isRecord(entry) && typeof entry.id === 'string')
-            .map((entry) => (entry as { id: string }).id)
-            .filter((id) => !survivingIds.has(id));
+        const normalizedDevices = devices.map((device) => normalizeDevice(device));
+
+        // Deleting a computer happens by filtering this list, in more than one
+        // screen. Pruning here means no caller has to remember to clear the
+        // secrets, and a removed computer never leaves a usable token behind.
+        const previousRaw = await AsyncStorage.getItem('devices');
+        const survivingIds = new Set(normalizedDevices.map((device) => device.id));
+        let removedIds: string[] = [];
+        try {
+          const previous = previousRaw ? JSON.parse(previousRaw) : [];
+          if (Array.isArray(previous)) {
+            removedIds = previous
+              .filter((entry) => isRecord(entry) && typeof entry.id === 'string')
+              .map((entry) => (entry as { id: string }).id)
+              .filter((id) => !survivingIds.has(id));
+          }
+        } catch {
+          // Unreadable previous list: nothing reliable to prune.
         }
-      } catch {
-        // Unreadable previous list: nothing reliable to prune.
+
+        await AsyncStorage.setItem('devices', JSON.stringify(normalizedDevices));
+        syncDevicesToWidgetStorage(normalizedDevices);
+
+        await Promise.all(
+          removedIds.map((id) =>
+            clearDeviceCredentials(id).catch((error) => {
+              console.warn('Could not clear credentials for a removed device:', error);
+            })
+          )
+        );
+      } catch (error) {
+        console.error('Error saving devices:', error);
+        throw error;
+      }
+    });
+  },
+
+  async updateDeviceStatuses(
+    updates: Pick<Device, 'id' | 'status'>[]
+  ): Promise<Device[]> {
+    const statuses = new Map(
+      updates
+        .map((update) => [update.id.trim(), update.status] as const)
+        .filter(([id]) => id.length > 0)
+    );
+
+    return enqueueDeviceStorageWrite(async () => {
+      const raw = await AsyncStorage.getItem('devices');
+      if (!raw) {
+        return [];
       }
 
-      await AsyncStorage.setItem('devices', JSON.stringify(normalizedDevices));
-      syncDevicesToWidgetStorage(normalizedDevices);
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
 
-      await Promise.all(
-        removedIds.map((id) =>
-          clearDeviceCredentials(id).catch((error) => {
-            console.warn('Could not clear credentials for a removed device:', error);
-          })
-        )
-      );
-    } catch (error) {
-      console.error('Error saving devices:', error);
-      throw error;
-    }
+      let changed = false;
+      const currentDevices = parsed.map((entry) => normalizeDevice(entry));
+      const nextDevices = currentDevices.map((device) => {
+        const nextStatus = statuses.get(device.id);
+        if (!nextStatus || nextStatus === device.status) {
+          return device;
+        }
+
+        changed = true;
+        return { ...device, status: nextStatus };
+      });
+
+      if (changed) {
+        await AsyncStorage.setItem('devices', JSON.stringify(nextDevices));
+        syncDevicesToWidgetStorage(nextDevices);
+      }
+
+      return nextDevices;
+    });
   },
 
   async syncWidgetData(): Promise<void> {
@@ -1853,6 +1996,10 @@ const deviceService = {
     const cachedResult = pairingValidationCache.get(cacheKey);
 
     if (cachedResult && cachedResult.expiresAt > Date.now()) {
+      if (cachedResult.error) {
+        throw cachedResult.error;
+      }
+
       if (trimmedLocalDeviceId && pendingEnrollment?.deviceToken === token) {
         await setDeviceToken(trimmedLocalDeviceId, token);
         await clearPendingDeviceEnrollment(trimmedLocalDeviceId);
@@ -1873,6 +2020,7 @@ const deviceService = {
       pairingValidationCache.set(cacheKey, {
         expiresAt: Date.now() + PAIRING_CACHE_TTL_MS,
         data: response.data,
+        error: null,
       });
 
       // A successful authenticated request proves that a staged enrollment
@@ -1884,8 +2032,25 @@ const deviceService = {
       }
       return response.data;
     } catch (error) {
-      pairingValidationCache.delete(cacheKey);
-      throw normalizeCompanionRequestError(error, 'Unable to verify the pairing token with the companion.');
+      const normalizedError = normalizeCompanionRequestError(
+        error,
+        'Unable to verify the pairing token with the companion.'
+      );
+
+      if (isAxiosError(error) && isUnauthorizedStatus(error.response?.status)) {
+        // Background status polling must not turn one stale credential into an
+        // authentication lockout. Cache only definitive 401s; transport
+        // failures remain immediately retryable when the PC finishes booting.
+        pairingValidationCache.set(cacheKey, {
+          expiresAt: Date.now() + PAIRING_CACHE_TTL_MS,
+          data: null,
+          error: normalizedError,
+        });
+      } else {
+        pairingValidationCache.delete(cacheKey);
+      }
+
+      throw normalizedError;
     }
   },
 
@@ -2072,25 +2237,39 @@ const deviceService = {
     }
   },
 
+  async getCompanionHealthInfo(
+    deviceIp: string,
+    localDeviceId?: string | null
+  ): Promise<CompanionHealthInfo> {
+    const { ip: targetIp, port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(
+      deviceIp,
+      null,
+      localDeviceId
+    );
+    const response = await requestCompanion<any>({
+      ip: targetIp,
+      port: targetPort,
+      path: '/v1/health',
+      timeoutMs: DEVICE_STATUS_TIMEOUT_MS,
+      tlsFingerprint,
+      headers: {
+        'Cache-Control': 'no-cache',
+      },
+    });
+    const data = isRecord(response.data?.data) ? response.data.data : null;
+    const protocolVersion = data ? Number(data.protocol_version) : Number.NaN;
+
+    return {
+      online: response.data?.ok === true && data?.status === 'online',
+      version: data ? toCandidateString(data.version) : null,
+      protocolVersion: Number.isInteger(protocolVersion) ? protocolVersion : null,
+    };
+  },
+
   async checkDeviceStatus(deviceIp: string, localDeviceId?: string | null): Promise<boolean> {
     try {
-      const { port: targetPort, tlsFingerprint } = await resolveTargetEndpoint(
-        deviceIp,
-        null,
-        localDeviceId
-      );
-      const response = await requestCompanion<any>({
-        ip: deviceIp,
-        port: targetPort,
-        path: '/v1/health',
-        timeoutMs: DEVICE_STATUS_TIMEOUT_MS,
-        tlsFingerprint,
-        headers: {
-          'Cache-Control': 'no-cache',
-        },
-      });
-
-      return response.data?.ok === true && response.data?.data?.status === 'online';
+      const health = await this.getCompanionHealthInfo(deviceIp, localDeviceId);
+      return health.online;
     } catch (error) {
       console.log('Error checking device status:', error);
       return false;

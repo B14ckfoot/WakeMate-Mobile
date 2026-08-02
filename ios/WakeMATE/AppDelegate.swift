@@ -2,6 +2,18 @@ import Expo
 import React
 import ReactAppDependencyProvider
 
+#if DEBUG && os(iOS) && !targetEnvironment(simulator)
+private final class WakeMatePhysicalDebugWindow: UIWindow {
+  override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+    if motion == .motionShake {
+      return
+    }
+
+    super.motionEnded(motion, with: event)
+  }
+}
+#endif
+
 @UIApplicationMain
 public class AppDelegate: ExpoAppDelegate {
   var window: UIWindow?
@@ -22,7 +34,11 @@ public class AppDelegate: ExpoAppDelegate {
     bindReactNativeFactory(factory)
 
 #if os(iOS) || os(tvOS)
+#if DEBUG && os(iOS) && !targetEnvironment(simulator)
+    window = WakeMatePhysicalDebugWindow(frame: UIScreen.main.bounds)
+#else
     window = UIWindow(frame: UIScreen.main.bounds)
+#endif
     factory.startReactNative(
       withModuleName: "main",
       in: window,
