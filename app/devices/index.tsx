@@ -15,6 +15,10 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
+import {
+  getFavoriteDeviceId,
+  setFavoriteDeviceId,
+} from '../../src/services/favoriteDevice';
 import SwipeableDeviceItem from '../../src/components/SwipeableDeviceItem';
 import { useFocusedPolling } from '../../src/hooks/useFocusedPolling';
 
@@ -24,6 +28,7 @@ export default function DevicesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [devices, setDevices] = useState<Device[]>([]);
+  const [favoriteId, setFavoriteId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isRefreshingStatuses, setIsRefreshingStatuses] = useState(false);
@@ -34,6 +39,15 @@ export default function DevicesScreen() {
   useFocusEffect(
     useCallback(() => {
       isScreenFocusedRef.current = true;
+
+      // Re-read on focus rather than on every poll: the widget default only
+      // changes from a deliberate action, here or in Settings.
+      void (async () => {
+        const storedFavorite = await getFavoriteDeviceId();
+        if (isScreenFocusedRef.current) {
+          setFavoriteId(storedFavorite);
+        }
+      })();
 
       return () => {
         isScreenFocusedRef.current = false;
@@ -165,8 +179,24 @@ export default function DevicesScreen() {
     );
   };
 
+  // The Home Screen widget and the Control Center button wake this computer
+  // unless that particular widget was pointed at a different one. Exactly one
+  // computer is always the default, so this picks rather than toggles.
+  const handleSelectWidgetDevice = useCallback(async (device: Device) => {
+    try {
+      setFavoriteId(await setFavoriteDeviceId(device.id));
+    } catch (error) {
+      console.error('Error saving the widget device:', error);
+      Alert.alert('Error', 'Could not update which PC the widget wakes.');
+    }
+  }, []);
+
   const handleLongPress = (device: Device) => {
     Alert.alert(device.name, 'Choose an option', [
+      {
+        text: 'Use for Widget',
+        onPress: () => { void handleSelectWidgetDevice(device); },
+      },
       {
         text: 'Edit Device',
         onPress: () => router.push(`/devices/edit/${device.id}`),
@@ -214,12 +244,19 @@ export default function DevicesScreen() {
     }
   }, [router]);
 
+  // No favorite yet means the widget falls back to the first saved computer,
+  // so show that one as the effective default rather than showing none.
+  const effectiveFavoriteId =
+    devices.find((device) => device.id === favoriteId)?.id ?? devices[0]?.id ?? null;
+
   const renderDevice = ({ item }: { item: Device }) => (
     <SwipeableDeviceItem
       device={item}
       onDelete={handleDeleteDevice}
       onPress={(device) => { void handlePressDevice(device); }}
       onLongPress={handleLongPress}
+      isFavorite={item.id === effectiveFavoriteId}
+      onSelectFavorite={(device) => { void handleSelectWidgetDevice(device); }}
     />
   );
 

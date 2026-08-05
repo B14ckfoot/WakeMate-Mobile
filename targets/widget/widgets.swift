@@ -1,54 +1,86 @@
+import AppIntents
 import WidgetKit
 import SwiftUI
 
 @available(iOS 17.0, *)
 struct WakeMateWidgetEntry: TimelineEntry {
     let date: Date
-    let resolvedDevice: WakeMateSharedDevice?
-    let configuredDevice: WakeMateDeviceEntity?
+    let resolution: WakeMateDeviceResolution
+    let lastWake: WakeMateLastWake.Record?
+
+    var device: WakeMateSharedDevice? {
+        resolution.device
+    }
 
     var displayName: String {
-        resolvedDevice?.name ?? configuredDevice?.name ?? "Wake a Device"
+        switch resolution {
+        case let .resolved(device, _):
+            return device.name
+        case .configuredDeviceMissing:
+            return "Computer Removed"
+        case .noDevices:
+            return "No Computers Yet"
+        }
     }
 
-    var subtitle: String {
-        if let resolvedDevice {
-            return resolvedDevice.status == "online"
-                ? "Last seen online on \(resolvedDevice.ip)"
-                : "Magic packet ready for \(resolvedDevice.ip)"
+    /// What the button will do, phrased for the person looking at it.
+    var actionTitle: String {
+        device == nil ? "Open WakeMATE" : "Wake"
+    }
+
+    /// Tapping anywhere outside the wake button opens the app: the device
+    /// screen when there is one, the list when there is not.
+    var containerURL: URL {
+        guard let device else {
+            return WakeMateDeepLink.devicesURL
         }
 
-        return "Tap to open WakeMATE and choose a saved computer."
-    }
-
-    var wakeURL: URL {
-        WakeMateDeepLink.wakeURL(for: resolvedDevice?.id ?? configuredDevice?.id)
+        return WakeMateDeepLink.wakeURL(for: device.id)
     }
 }
 
 @available(iOS 17.0, *)
 struct WakeMateWidgetProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> WakeMateWidgetEntry {
-        WakeMateWidgetEntry(
-            date: Date(),
-            resolvedDevice: WakeMateSharedStore.devices().first,
-            configuredDevice: nil
-        )
+        // Deliberately the same resolution a placed widget uses. When the
+        // gallery preview showed the first computer but the placed widget
+        // resolved to nothing, the widget looked broken rather than
+        // unconfigured.
+        makeEntry(configuredID: nil)
     }
 
     func snapshot(for configuration: WakeMateWidgetConfigurationIntent, in context: Context) async -> WakeMateWidgetEntry {
-        makeEntry(for: configuration)
+        makeEntry(configuredID: configuration.device?.id)
     }
 
     func timeline(for configuration: WakeMateWidgetConfigurationIntent, in context: Context) async -> Timeline<WakeMateWidgetEntry> {
-        Timeline(entries: [makeEntry(for: configuration)], policy: .never)
+        let entry = makeEntry(configuredID: configuration.device?.id)
+
+        guard let lastWake = entry.lastWake else {
+            // Nothing time-sensitive on screen. Every input that changes this
+            // widget (a press, a device edit in the app) reloads it explicitly.
+            return Timeline(entries: [entry], policy: .never)
+        }
+
+        // Retire the "just sent" line on its own rather than leaving a stale
+        // result on the Home Screen indefinitely.
+        let expiry = lastWake.sentAt.addingTimeInterval(WakeMateLastWake.displaySeconds)
+        return Timeline(
+            entries: [
+                entry,
+                WakeMateWidgetEntry(date: expiry, resolution: entry.resolution, lastWake: nil),
+            ],
+            policy: .never
+        )
     }
 
-    private func makeEntry(for configuration: WakeMateWidgetConfigurationIntent) -> WakeMateWidgetEntry {
-        WakeMateWidgetEntry(
+    private func makeEntry(configuredID: String?) -> WakeMateWidgetEntry {
+        let resolution = WakeMateSharedStore.resolve(configuredID: configuredID)
+
+        return WakeMateWidgetEntry(
             date: Date(),
-            resolvedDevice: WakeMateSharedStore.device(id: configuration.device?.id),
-            configuredDevice: configuration.device
+            resolution: resolution,
+            lastWake: resolution.device.flatMap { WakeMateLastWake.current(for: $0.id) }
         )
     }
 }
@@ -59,43 +91,100 @@ struct WakeMateWidgetEntryView: View {
 
     let entry: WakeMateWidgetEntry
 
+    private var accent: Color {
+        Color(red: 0.20, green: 0.82, blue: 0.48)
+    }
+
+    private var iconName: String {
+        switch entry.resolution {
+        case .resolved:
+            return entry.lastWake?.didSend == false ? "exclamationmark.triangle.fill" : "power.circle.fill"
+        case .configuredDeviceMissing, .noDevices:
+            return "power.circle"
+        }
+    }
+
+    /// Never claims the computer is awake — only that the packet left the
+    /// phone. Whether it actually booted is the companion's answer to give.
+    @ViewBuilder
+    private var subtitle: some View {
+        switch entry.resolution {
+        case let .resolved(device, _):
+            if let lastWake = entry.lastWake {
+                if lastWake.didSend {
+                    Text("Magic packet sent ") + Text(lastWake.sentAt, style: .relative) + Text(" ago")
+                } else {
+                    Text("Couldn't send. Open WakeMATE to finish.")
+                }
+            } else if device.status == "online" {
+                Text("Last seen online on \(device.ip)")
+            } else {
+                Text("Ready to wake on \(device.ip)")
+            }
+        case .configuredDeviceMissing:
+            Text("Hold this widget to pick another computer.")
+        case .noDevices:
+            Text("Add a computer in WakeMATE to wake it from here.")
+        }
+    }
+
+    /// The whole point of the widget: send the packet from the extension
+    /// instead of launching the app to do it. Falls back to a plain tap-to-open
+    /// when there is nothing to wake.
+    @ViewBuilder
+    private func wakeButton<Label: View>(@ViewBuilder label: () -> Label) -> some View {
+        if let device = entry.device {
+            Button(intent: WakeMateWakeDeviceIntent(deviceID: device.id), label: label)
+                .buttonStyle(.plain)
+        } else {
+            label()
+        }
+    }
+
     var body: some View {
         Group {
             switch family {
 #if os(iOS)
             case .accessoryInline:
-                Text(entry.resolvedDevice == nil ? "WakeMATE" : "Wake \(entry.displayName)")
+                // Inline accessories cannot host controls, so this one stays a
+                // deep link into the app.
+                Text(entry.device == nil ? "WakeMATE" : "Wake \(entry.displayName)")
             case .accessoryCircular:
-                ZStack {
-                    Circle()
-                        .fill(Color(red: 0.20, green: 0.82, blue: 0.48).opacity(0.18))
+                wakeButton {
+                    ZStack {
+                        AccessoryWidgetBackground()
 
-                    Image(systemName: entry.resolvedDevice == nil ? "power.circle" : "power.circle.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.20, green: 0.82, blue: 0.48))
+                        Image(systemName: iconName)
+                            .font(.system(size: 20, weight: .semibold))
+                    }
                 }
+                .accessibilityLabel(
+                    entry.device == nil ? "Open WakeMATE" : "Wake \(entry.displayName)"
+                )
             case .accessoryRectangular:
-                VStack(alignment: .leading, spacing: 4) {
-                    Label("Wake PC", systemImage: "power.circle.fill")
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Wake PC", systemImage: iconName)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(red: 0.20, green: 0.82, blue: 0.48))
 
-                    Text(entry.displayName)
-                        .font(.headline)
-                        .lineLimit(1)
+                    wakeButton {
+                        Text(entry.displayName)
+                            .font(.headline)
+                            .lineLimit(1)
+                    }
 
-                    Text(entry.subtitle)
+                    subtitle
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 #endif
             default:
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 8) {
-                        Image(systemName: entry.resolvedDevice == nil ? "power.circle" : "power.circle.fill")
+                        Image(systemName: iconName)
                             .font(.title3.weight(.semibold))
-                            .foregroundStyle(Color(red: 0.20, green: 0.82, blue: 0.48))
+                            .foregroundStyle(accent)
 
                         Text("Wake PC")
                             .font(.caption.weight(.bold))
@@ -109,28 +198,34 @@ struct WakeMateWidgetEntryView: View {
                         .foregroundStyle(.white)
                         .lineLimit(2)
 
-                    Text(entry.subtitle)
+                    subtitle
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.74))
                         .lineLimit(2)
 
                     Spacer(minLength: 0)
 
-                    HStack {
-                        Text(entry.resolvedDevice == nil ? "Open WakeMATE" : "Send Magic Packet")
-                            .font(.caption.weight(.bold))
+                    wakeButton {
+                        HStack {
+                            Text(entry.actionTitle)
+                                .font(.caption.weight(.bold))
 
-                        Spacer(minLength: 8)
+                            Spacer(minLength: 8)
 
-                        Image(systemName: "arrow.up.right.circle.fill")
-                            .font(.headline)
+                            Image(systemName: entry.device == nil ? "arrow.up.right.circle.fill" : "power.circle.fill")
+                                .font(.headline)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            Capsule()
+                                .fill(accent.opacity(entry.device == nil ? 0.42 : 0.82))
+                        )
                     }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(
-                        Capsule()
-                            .fill(Color(red: 0.20, green: 0.82, blue: 0.48).opacity(0.82))
+                    .accessibilityLabel(
+                        entry.device == nil ? "Open WakeMATE" : "Wake \(entry.displayName)"
                     )
                 }
                 .padding(16)
@@ -149,7 +244,7 @@ struct WakeMateWidgetEntryView: View {
                 )
             }
         }
-        .widgetURL(entry.wakeURL)
+        .widgetURL(entry.containerURL)
     }
 }
 

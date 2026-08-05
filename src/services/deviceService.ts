@@ -14,6 +14,7 @@ import {
   sanitizeWakePort,
 } from '../utils/deviceNetwork';
 import { syncDevicesToWidgetStorage } from '../widget/widgetSharedStorage';
+import { reconcileFavoriteDevice } from './favoriteDevice';
 import {
   normalizeTlsFingerprint,
   requestCompanion,
@@ -1843,6 +1844,12 @@ const deviceService = {
         await AsyncStorage.setItem('devices', JSON.stringify(normalizedDevices));
         syncDevicesToWidgetStorage(normalizedDevices);
 
+        // A deleted computer must not stay the widget's default, or the widget
+        // resolves to a device that is no longer saved.
+        await reconcileFavoriteDevice(normalizedDevices).catch((error) => {
+          console.warn('Could not reconcile the widget favorite device:', error);
+        });
+
         await Promise.all(
           removedIds.map((id) =>
             clearDeviceCredentials(id).catch((error) => {
@@ -1902,6 +1909,7 @@ const deviceService = {
     try {
       const devices = await this.getDevices();
       syncDevicesToWidgetStorage(devices);
+      await reconcileFavoriteDevice(devices);
     } catch (error) {
       console.error('Error syncing widget data:', error);
     }

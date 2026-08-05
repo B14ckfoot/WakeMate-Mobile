@@ -4,6 +4,9 @@ import Foundation
 enum WakeMateSharedConstants {
     static let appGroup = "group.com.anonymous.wakematemobile"
     static let devicesKey = "wakemate.devices"
+    /// The computer the app marked as the widget default. Written by
+    /// `src/services/favoriteDevice.ts`; keep the key in step with that file.
+    static let favoriteDeviceKey = "wakemate.favoriteDeviceId"
     static let widgetKind = "com.anonymous.wakematemobile.widget"
     static let controlKind = "com.anonymous.wakematemobile.control"
     static let appScheme = "myapp"
@@ -20,23 +23,68 @@ struct WakeMateSharedDevice: Codable, Hashable, Identifiable {
     let type: String
 }
 
+/// Which computer a widget or control should act on, and why. The distinction
+/// between "nothing was chosen" and "the chosen computer is gone" matters:
+/// falling back to another machine in the second case would wake the wrong PC.
+enum WakeMateDeviceResolution: Equatable {
+    /// A computer to act on. `isDefault` is true when it came from the app's
+    /// favorite (or the first saved computer) rather than an explicit pick.
+    case resolved(WakeMateSharedDevice, isDefault: Bool)
+    /// This surface was pointed at a computer that is no longer saved.
+    case configuredDeviceMissing
+    /// Nothing is saved in the app yet.
+    case noDevices
+
+    var device: WakeMateSharedDevice? {
+        guard case let .resolved(device, _) = self else {
+            return nil
+        }
+
+        return device
+    }
+
+    var isDefault: Bool {
+        guard case let .resolved(_, isDefault) = self else {
+            return false
+        }
+
+        return isDefault
+    }
+}
+
 enum WakeMateSharedStore {
-    static func devices() -> [WakeMateSharedDevice] {
-        guard
-            let defaults = UserDefaults(suiteName: WakeMateSharedConstants.appGroup),
-            let data = defaults.data(forKey: WakeMateSharedConstants.devicesKey)
-        else {
+    private static func defaults() -> UserDefaults? {
+        UserDefaults(suiteName: WakeMateSharedConstants.appGroup)
+    }
+
+    /// Saved computers in the order the app stores them, which is the order
+    /// they were added. `storedDevices().first` is therefore "the first
+    /// computer you connected", which is what an unconfigured widget falls
+    /// back to.
+    static func storedDevices() -> [WakeMateSharedDevice] {
+        guard let data = defaults()?.data(forKey: WakeMateSharedConstants.devicesKey) else {
             return []
         }
 
-        do {
-            let decodedDevices = try JSONDecoder().decode([WakeMateSharedDevice].self, from: data)
-            return decodedDevices.sorted {
-                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-        } catch {
-            return []
+        return (try? JSONDecoder().decode([WakeMateSharedDevice].self, from: data)) ?? []
+    }
+
+    /// The same computers sorted for human pickers. Never use this for the
+    /// fallback: alphabetical order has nothing to do with which computer the
+    /// user actually cares about.
+    static func devices() -> [WakeMateSharedDevice] {
+        storedDevices().sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    static func favoriteDeviceID() -> String? {
+        guard let raw = defaults()?.string(forKey: WakeMateSharedConstants.favoriteDeviceKey) else {
+            return nil
+        }
+
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func device(id: String?) -> WakeMateSharedDevice? {
@@ -44,7 +92,45 @@ enum WakeMateSharedStore {
             return nil
         }
 
-        return devices().first { $0.id == id }
+        return storedDevices().first { $0.id == id }
+    }
+
+    /// The single place every widget surface decides what to act on:
+    /// the computer this widget was configured with, else the favorite chosen
+    /// in the app, else the first computer that was added. Without the last two
+    /// steps a freshly placed widget resolves to nothing at all, even though
+    /// the gallery preview showed a real computer.
+    static func resolve(configuredID: String?) -> WakeMateDeviceResolution {
+        let saved = storedDevices()
+
+        let trimmedID = configuredID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedID.isEmpty {
+            guard let configured = saved.first(where: { $0.id == trimmedID }) else {
+                // Deliberately no fallback: this widget was pointed at a
+                // specific computer and that computer was removed.
+                return .configuredDeviceMissing
+            }
+
+            return .resolved(configured, isDefault: false)
+        }
+
+        if
+            let favoriteID = favoriteDeviceID(),
+            let favorite = saved.first(where: { $0.id == favoriteID })
+        {
+            return .resolved(favorite, isDefault: true)
+        }
+
+        guard let first = saved.first else {
+            return .noDevices
+        }
+
+        return .resolved(first, isDefault: true)
+    }
+
+    /// The computer a brand-new widget or control should start out on.
+    static func defaultDevice() -> WakeMateSharedDevice? {
+        resolve(configuredID: nil).device
     }
 }
 
@@ -109,6 +195,13 @@ struct WakeMateDeviceQuery: EntityQuery {
 
     func suggestedEntities() async throws -> [WakeMateDeviceEntity] {
         WakeMateSharedStore.devices().map(WakeMateDeviceEntity.init(device:))
+    }
+
+    /// Pre-fills the picker when a widget or control is first added. The
+    /// protocol's default returns nil, which is what left every new widget
+    /// configured with no computer at all.
+    func defaultResult() async -> WakeMateDeviceEntity? {
+        WakeMateSharedStore.defaultDevice().map(WakeMateDeviceEntity.init(device:))
     }
 }
 

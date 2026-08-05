@@ -11,23 +11,32 @@ struct WakeMateControlWidget: ControlWidget {
             kind: Self.kind,
             intent: WakeMateControlConfigurationIntent.self
         ) { configuration in
-            let selectedDevice = WakeMateSharedStore.device(id: configuration.device?.id)
-            let deviceName = selectedDevice?.name ?? configuration.device?.name ?? "Choose Device"
+            // Unconfigured controls fall back to the favorite chosen in the
+            // app, then to the first saved computer, so the button works the
+            // moment it is added.
+            let resolution = WakeMateSharedStore.resolve(configuredID: configuration.device?.id)
 
-            // Not `OpenURLIntent`: Control Center refuses custom URL schemes,
-            // so `myapp://wake?deviceId=...` was silently dropped and the
-            // button did nothing at all. `WakeMateWakeDeviceIntent` sends the
-            // magic packet from this extension instead, and only falls back to
-            // opening the app when it cannot.
-            ControlWidgetButton(
-                action: WakeMateWakeDeviceIntent(
-                    deviceID: selectedDevice?.id ?? configuration.device?.id
+            // Whatever this says is what the press wakes: the resolved ID goes
+            // straight into the intent rather than being resolved again later.
+            ControlWidgetButton(action: WakeMateWakeDeviceIntent(deviceID: resolution.device?.id)) {
+                Label(
+                    Self.title(for: resolution),
+                    systemImage: resolution.device == nil ? "power.circle" : "power.circle.fill"
                 )
-            ) {
-                Label(deviceName, systemImage: selectedDevice == nil ? "power.circle" : "power.circle.fill")
             }
         }
         .displayName("Wake PC")
         .description("Wake a saved computer from Control Center.")
+    }
+
+    private static func title(for resolution: WakeMateDeviceResolution) -> String {
+        switch resolution {
+        case let .resolved(device, _):
+            return device.name
+        case .configuredDeviceMissing:
+            return "Computer Removed"
+        case .noDevices:
+            return "Add a Computer"
+        }
     }
 }

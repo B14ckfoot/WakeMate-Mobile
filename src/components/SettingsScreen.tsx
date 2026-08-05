@@ -20,15 +20,22 @@ import {
   Edit,
   ExternalLink,
   Info,
+  LayoutGrid,
   MonitorDown,
   RefreshCw,
   Save,
+  Star,
   Trash,
   Wifi,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import deviceService from '../services/deviceService';
+import {
+  getFavoriteDeviceId,
+  resolveWidgetDevice,
+  setFavoriteDeviceId,
+} from '../services/favoriteDevice';
 import {
   DEFAULT_WAKE_PORT,
   getSuggestedWakeAddress,
@@ -45,6 +52,7 @@ export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [devices, setDevices] = useState<Device[]>([]);
+  const [favoriteId, setFavoriteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [editName, setEditName] = useState('');
@@ -57,13 +65,26 @@ export default function SettingsScreen() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const loadedDevices = await deviceService.getDevices();
+      const [loadedDevices, storedFavorite] = await Promise.all([
+        deviceService.getDevices(),
+        getFavoriteDeviceId(),
+      ]);
       setDevices(loadedDevices);
+      setFavoriteId(storedFavorite);
     } catch (error) {
       console.error('Error loading settings data:', error);
       Alert.alert('Error', 'Failed to load settings');
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleSelectWidgetDevice = useCallback(async (device: Device) => {
+    try {
+      setFavoriteId(await setFavoriteDeviceId(device.id));
+    } catch (error) {
+      console.error('Error saving the widget device:', error);
+      Alert.alert('Error', 'Could not update which PC the widget wakes.');
     }
   }, []);
 
@@ -265,6 +286,58 @@ export default function SettingsScreen() {
               <Text style={styles.companionLinkText}>Download &amp; Setup</Text>
               <ExternalLink size={17} color="#ffffff" />
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <LayoutGrid size={20} color="#0891b2" />
+              <Text style={styles.sectionTitle}>Widget &amp; Control Center</Text>
+            </View>
+
+            {devices.length > 0 ? (
+              <>
+                <Text style={styles.companionDescription}>
+                  Pick the PC your Home Screen widget and Control Center button wake. To give one
+                  widget a different PC, hold it on the Home Screen and choose Edit Widget.
+                </Text>
+
+                {devices.map((device) => {
+                  const isWidgetDevice = resolveWidgetDevice(devices, favoriteId)?.id === device.id;
+
+                  return (
+                    <TouchableOpacity
+                      key={device.id}
+                      style={[styles.widgetOption, isWidgetDevice && styles.widgetOptionSelected]}
+                      onPress={() => { void handleSelectWidgetDevice(device); }}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: isWidgetDevice }}
+                      accessibilityLabel={
+                        isWidgetDevice
+                          ? `${device.name} is the computer the widget wakes`
+                          : `Use ${device.name} for the widget`
+                      }
+                    >
+                      <Star
+                        size={20}
+                        color={isWidgetDevice ? '#fbbf24' : '#4b6470'}
+                        fill={isWidgetDevice ? '#fbbf24' : 'transparent'}
+                      />
+
+                      <View style={styles.widgetOptionText}>
+                        <Text style={styles.deviceName}>{device.name}</Text>
+                        <Text style={styles.deviceLine}>
+                          {isWidgetDevice ? `${device.ip} • Widget default` : device.ip}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </>
+            ) : (
+              <Text style={styles.noDevicesText}>
+                Add a computer first, then choose which one the widget wakes.
+              </Text>
+            )}
           </View>
 
           <View style={styles.section}>
@@ -535,6 +608,26 @@ const styles = StyleSheet.create({
     gap: 12,
     borderWidth: 1,
     borderColor: '#17323b',
+  },
+  widgetOption: {
+    backgroundColor: '#0f171c',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 10,
+    minHeight: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: '#17323b',
+  },
+  widgetOptionSelected: {
+    borderColor: '#fbbf24',
+    backgroundColor: '#141a18',
+  },
+  widgetOptionText: {
+    flex: 1,
   },
   deviceInfo: {
     flex: 1,

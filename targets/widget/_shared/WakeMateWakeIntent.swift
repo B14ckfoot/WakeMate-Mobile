@@ -6,6 +6,7 @@
 import AppIntents
 import Darwin
 import Foundation
+import WidgetKit
 
 /// Sends a Wake-on-LAN magic packet straight from the widget extension.
 ///
@@ -167,22 +168,109 @@ enum WakeMatePendingWake {
     }
 }
 
-/// Failures the person pressing the control can actually act on. Control
-/// Center surfaces these, which is the only feedback channel available: an
-/// extension cannot bring the app forward (`ForegroundContinuableIntent` is
-/// unavailable in app extensions) and Control Center ignores custom URL
-/// schemes, so there is no way to hand off automatically.
+/// The outcome of the last press, so the widget can say what actually happened
+/// instead of looking identical before and after a tap. Only ever records that
+/// the packet left the phone -- whether the computer woke up is the companion's
+/// answer to give, not this extension's.
+enum WakeMateLastWake {
+    static let key = "wakemate.lastWake"
+    /// Past this the widget goes back to its resting state; a result from an
+    /// hour ago tells the user nothing about the button they are looking at.
+    static let displaySeconds: Double = 10 * 60
+
+    struct Record {
+        let deviceID: String
+        let sentAt: Date
+        let didSend: Bool
+    }
+
+    static func record(deviceID: String, didSend: Bool) {
+        guard let defaults = UserDefaults(suiteName: WakeMateSharedConstants.appGroup) else {
+            return
+        }
+
+        let payload: [String: Any] = [
+            "deviceId": deviceID,
+            "sentAt": Date().timeIntervalSince1970 * 1000,
+            "didSend": didSend,
+        ]
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+            return
+        }
+
+        defaults.set(data, forKey: key)
+    }
+
+    static func latest() -> Record? {
+        guard
+            let defaults = UserDefaults(suiteName: WakeMateSharedConstants.appGroup),
+            let data = defaults.data(forKey: key),
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let deviceID = payload["deviceId"] as? String,
+            let sentAtMilliseconds = payload["sentAt"] as? Double,
+            let didSend = payload["didSend"] as? Bool
+        else {
+            return nil
+        }
+
+        return Record(
+            deviceID: deviceID,
+            sentAt: Date(timeIntervalSince1970: sentAtMilliseconds / 1000),
+            didSend: didSend
+        )
+    }
+
+    /// The record for `deviceID`, but only while it is still recent enough to
+    /// describe what the user just did.
+    static func current(for deviceID: String, now: Date = Date()) -> Record? {
+        guard
+            let record = latest(),
+            record.deviceID == deviceID,
+            now.timeIntervalSince(record.sentAt) < displaySeconds,
+            // A clock that moved backwards should not resurrect an old result.
+            now.timeIntervalSince(record.sentAt) > -displaySeconds
+        else {
+            return nil
+        }
+
+        return record
+    }
+}
+
+/// Both widget surfaces render from app-group state, so anything that changes
+/// that state has to ask WidgetKit to redraw or the user keeps looking at the
+/// previous answer.
+enum WakeMateWidgetRefresh {
+    static func reloadAll() {
+        WidgetCenter.shared.reloadTimelines(ofKind: WakeMateSharedConstants.widgetKind)
+
+        if #available(iOS 18.0, *) {
+            ControlCenter.shared.reloadControls(ofKind: WakeMateSharedConstants.controlKind)
+        }
+    }
+}
+
+/// Failures the person pressing the widget or control can actually act on.
+/// These surface as system alerts, which is the only feedback channel
+/// available: an extension cannot bring the app forward
+/// (`ForegroundContinuableIntent` is unavailable in app extensions) and Control
+/// Center ignores custom URL schemes, so there is no way to hand off
+/// automatically.
 /// iOS 16+ because of `LocalizedStringResource`: this file is also compiled
 /// into the app target, which still deploys back to iOS 15.1.
 @available(iOS 16.0, *)
 enum WakeMateWakeError: Error, CustomLocalizedStringResourceConvertible {
     case notConfigured
+    case configuredDeviceMissing
     case couldNotSend
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .notConfigured:
-            return "Press and hold this control, then choose a computer to wake."
+            return "Add a computer in WakeMATE first, then press and hold this to choose it."
+        case .configuredDeviceMissing:
+            return "That computer is no longer saved in WakeMATE. Press and hold to choose another."
         case .couldNotSend:
             return "Couldn't reach the network. Open WakeMATE once to finish waking this computer."
         }
@@ -198,11 +286,13 @@ struct WakeMateWakeDeviceIntent: AppIntent {
     /// and this cannot be decided per-run — it is read before `perform()`.
     static let openAppWhenRun: Bool = false
 
-    /// Plumbing for the Control Center button, not a Shortcuts action: its
-    /// only parameter is an opaque device ID, which would be meaningless in
-    /// the Shortcuts editor.
+    /// Plumbing for the widget and the Control Center button, not a Shortcuts
+    /// action: its only parameter is an opaque device ID, which would be
+    /// meaningless in the Shortcuts editor.
     static let isDiscoverable: Bool = false
 
+    /// Empty means "whatever this surface resolves to" -- the app's favorite,
+    /// or the first saved computer. A specific ID pins it to that computer.
     @Parameter(title: "Device")
     var deviceID: String?
 
@@ -213,21 +303,34 @@ struct WakeMateWakeDeviceIntent: AppIntent {
     }
 
     func perform() async throws -> some IntentResult {
-        guard let device = WakeMateSharedStore.device(id: deviceID) else {
-            // Either the control was never configured, or the saved device is
-            // gone. Nothing to record, so just say what to do about it.
-            throw WakeMateWakeError.notConfigured
+        let resolution = WakeMateSharedStore.resolve(configuredID: deviceID)
+
+        guard let device = resolution.device else {
+            // Nothing to record, so just say what to do about it.
+            throw resolution == .configuredDeviceMissing
+                ? WakeMateWakeError.configuredDeviceMissing
+                : WakeMateWakeError.notConfigured
         }
 
-        if WakeMateMagicPacket.wake(device: device) {
-            return .result()
+        let didSend = WakeMateMagicPacket.wake(device: device)
+
+        if !didSend {
+            // The packet could not leave the extension — most likely the
+            // local-network privilege is still undetermined for this install,
+            // and only the app can surface that system prompt. Leave the
+            // request for the app to finish and tell the user to open it.
+            WakeMatePendingWake.record(deviceID: device.id)
         }
 
-        // The packet could not leave the extension — most likely the
-        // local-network privilege is still undetermined for this install, and
-        // only the app can surface that system prompt. Leave the request for
-        // the app to finish and tell the user to open it.
-        WakeMatePendingWake.record(deviceID: device.id)
-        throw WakeMateWakeError.couldNotSend
+        // Recorded either way, then redrawn, so the widget reports what
+        // actually happened rather than staying on its resting state.
+        WakeMateLastWake.record(deviceID: device.id, didSend: didSend)
+        WakeMateWidgetRefresh.reloadAll()
+
+        guard didSend else {
+            throw WakeMateWakeError.couldNotSend
+        }
+
+        return .result()
     }
 }

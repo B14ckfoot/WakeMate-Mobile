@@ -7,7 +7,7 @@ import {
   PanGestureHandlerStateChangeEvent,
 } from 'react-native-gesture-handler';
 import { Device } from '../../src/types/device';
-import { Trash2 } from 'lucide-react-native';
+import { Star, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 
 interface SwipeableDeviceItemProps {
@@ -15,13 +15,19 @@ interface SwipeableDeviceItemProps {
   onDelete: (id: string) => void;
   onPress?: (device: Device) => void;
   onLongPress?: (device: Device) => void;
+  /** True when this is the computer the widget and control wake by default. */
+  isFavorite?: boolean;
+  /** Picks this computer as that default; exactly one device always is. */
+  onSelectFavorite?: (device: Device) => void;
 }
 
-const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({ 
-  device, 
+const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
+  device,
   onDelete,
   onPress,
-  onLongPress 
+  onLongPress,
+  isFavorite = false,
+  onSelectFavorite
 }) => {
   const router = useRouter();
   const translateX = useRef(new Animated.Value(0)).current;
@@ -128,8 +134,31 @@ const SwipeableDeviceItem: React.FC<SwipeableDeviceItemProps> = ({
           >
             <View style={styles.deviceInfo}>
               <Text style={styles.deviceName}>{device.name}</Text>
-              <Text style={styles.deviceIp}>{device.ip}</Text>
+              <Text style={styles.deviceIp}>
+                {isFavorite ? `${device.ip} • Widget default` : device.ip}
+              </Text>
             </View>
+
+            {onSelectFavorite ? (
+              <TouchableOpacity
+                style={styles.favoriteButton}
+                onPress={() => onSelectFavorite(device)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isFavorite }}
+                accessibilityLabel={
+                  isFavorite
+                    ? `${device.name} is the computer the widget wakes`
+                    : `Use ${device.name} for the widget`
+                }
+              >
+                <Star
+                  size={20}
+                  color={isFavorite ? '#fbbf24' : '#4b6470'}
+                  fill={isFavorite ? '#fbbf24' : 'transparent'}
+                />
+              </TouchableOpacity>
+            ) : null}
+
             <View style={styles.statusContainer}>
               <View style={[
                 styles.statusIndicator, 
@@ -159,15 +188,25 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   deviceItemContent: {
-    padding: 16,
+    paddingVertical: 10,
+    paddingLeft: 16,
+    paddingRight: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 12,
+    gap: 4,
   },
   deviceInfo: {
     flex: 1,
     paddingRight: 8,
+    paddingVertical: 6,
+  },
+  favoriteButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   deviceName: {
     color: '#f8fbff',
