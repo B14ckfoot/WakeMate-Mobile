@@ -1,0 +1,45 @@
+diff --git a/node_modules/react-native-udp/android/src/main/java/com/tradle/react/UdpSocketClient.java b/node_modules/react-native-udp/android/src/main/java/com/tradle/react/UdpSocketClient.java
+index a226705..ceeab64 100644
+--- a/node_modules/react-native-udp/android/src/main/java/com/tradle/react/UdpSocketClient.java
++++ b/node_modules/react-native-udp/android/src/main/java/com/tradle/react/UdpSocketClient.java
+@@ -27,6 +27,7 @@ import javax.annotation.Nullable;
+ public final class UdpSocketClient implements UdpReceiverTask.OnDataReceivedListener, OnDataSentListener {
+     private final OnDataReceivedListener mReceiverListener;
+     private final OnRuntimeExceptionListener mExceptionListener;
++    private volatile boolean mBroadcast = false;
+ 
+     private ExecutorService executor = Executors.newSingleThreadExecutor();
+ 
+@@ -75,6 +76,11 @@ public final class UdpSocketClient implements UdpReceiverTask.OnDataReceivedList
+ 
+         mSocket = new MulticastSocket(socketAddress);
+         mSocket.setReuseAddress(true);
++        // Enable broadcast before the receiver thread starts. On Android,
++        // DatagramSocket.receive() holds the socket monitor while it blocks, so a
++        // later synchronized setBroadcast() would wait for an inbound packet.
++        mSocket.setBroadcast(true);
++        mBroadcast = true;
+ 
+         // begin listening for data in the background
+         mReceiverTask = new UdpReceiverTask(mSocket, this);
+@@ -145,9 +151,18 @@ public final class UdpSocketClient implements UdpReceiverTask.OnDataReceivedList
+      * Sets the socket to enable broadcasts.
+      */
+     public void setBroadcast(boolean flag) throws SocketException {
+-        if (mSocket != null) {
+-            mSocket.setBroadcast(flag);
++        if (mSocket == null) {
++            return;
+         }
++        if (mSocket.isClosed()) {
++            throw new SocketException("Socket is closed");
++        }
++        if (flag == mBroadcast) {
++            return;
++        }
++        // May block until the receiver thread releases the socket monitor.
++        mSocket.setBroadcast(flag);
++        mBroadcast = flag;
+     }
+ 
+     /**
