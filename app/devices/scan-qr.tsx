@@ -4,7 +4,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { ArrowLeft } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import deviceService from '../services/deviceService';
+import deviceService from '../../src/services/deviceService';
 import { buildScannedDevice } from '../../src/utils/deviceMetadata';
 import { getThisPhoneDisplayName } from '../../src/utils/deviceIdentity';
 import { parseStructuredPairingQr } from '../../src/utils/pairingQr';

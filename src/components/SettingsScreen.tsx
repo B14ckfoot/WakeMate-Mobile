@@ -2,13 +2,10 @@ import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -17,16 +14,13 @@ import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ArrowLeft,
-  Edit,
   ExternalLink,
   Info,
   LayoutGrid,
   MonitorDown,
   RefreshCw,
-  Save,
   Star,
   Trash,
-  Wifi,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
@@ -36,14 +30,6 @@ import {
   resolveWidgetDevice,
   setFavoriteDeviceId,
 } from '../services/favoriteDevice';
-import {
-  DEFAULT_WAKE_PORT,
-  getSuggestedWakeAddress,
-  isValidIpAddress,
-  isValidMacAddress,
-  normalizeMacAddress,
-  sanitizeWakePort,
-} from '../utils/deviceNetwork';
 import { COMPANION_DOWNLOAD_URL } from './CompanionSetupPrompt';
 
 const appVersion = Constants.expoConfig?.version ?? '1.1.1';
@@ -54,14 +40,6 @@ export default function SettingsScreen() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [favoriteId, setFavoriteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [editingDevice, setEditingDevice] = useState<Device | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editMac, setEditMac] = useState('');
-  const [editIp, setEditIp] = useState('');
-  const [editWakeAddress, setEditWakeAddress] = useState('');
-  const [editWakePort, setEditWakePort] = useState(String(DEFAULT_WAKE_PORT));
-  const [modalVisible, setModalVisible] = useState(false);
-
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
@@ -93,107 +71,6 @@ export default function SettingsScreen() {
       loadData();
     }, [loadData])
   );
-
-  const handleEditDevice = (device: Device) => {
-    setEditingDevice(device);
-    setEditName(device.name);
-    setEditMac(device.mac);
-    setEditIp(device.ip);
-    setEditWakeAddress(device.wakeAddress);
-    setEditWakePort(String(device.wakePort));
-    setModalVisible(true);
-  };
-
-  const closeModal = () => {
-    setModalVisible(false);
-    setEditingDevice(null);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingDevice) {
-      return;
-    }
-
-    if (!editName.trim()) {
-      Alert.alert('Error', 'Please enter a device name');
-      return;
-    }
-
-    if (!editMac.trim()) {
-      Alert.alert('Error', 'Please enter the MAC address so Wake-on-LAN works while the PC is off');
-      return;
-    }
-
-    if (!isValidMacAddress(editMac)) {
-      Alert.alert('Error', 'Please enter a valid MAC address (for example 00:11:22:33:44:55)');
-      return;
-    }
-
-    if (!editIp.trim()) {
-      Alert.alert('Error', 'Please enter the ping address used to detect and control the device');
-      return;
-    }
-
-    if (!isValidIpAddress(editIp.trim())) {
-      Alert.alert('Error', 'Please enter a valid ping address (for example 192.168.1.100)');
-      return;
-    }
-
-    if (editWakeAddress.trim() && !isValidIpAddress(editWakeAddress.trim())) {
-      Alert.alert('Error', 'Please enter a valid wake address or leave it blank to use the subnet broadcast');
-      return;
-    }
-
-    const parsedPort = Number.parseInt(editWakePort.trim(), 10);
-    if (editWakePort.trim() && (!Number.isInteger(parsedPort) || parsedPort < 0 || parsedPort > 65535)) {
-      Alert.alert('Error', 'Please enter a valid wake port between 0 and 65535');
-      return;
-    }
-
-    try {
-      const suggestedWakeAddress = getSuggestedWakeAddress(editIp.trim());
-      const updatedDevice: Device = {
-        ...editingDevice,
-        name: editName.trim(),
-        mac: normalizeMacAddress(editMac),
-        ip: editIp.trim(),
-        wakeAddress: editWakeAddress.trim() || suggestedWakeAddress || editIp.trim(),
-        wakePort: sanitizeWakePort(editWakePort, DEFAULT_WAKE_PORT),
-      };
-
-      const updatedDevices = devices.map((device) =>
-        device.id === updatedDevice.id ? updatedDevice : device
-      );
-
-      await deviceService.saveDevices(updatedDevices);
-      setDevices(updatedDevices);
-      closeModal();
-      Alert.alert('Success', 'Device updated successfully');
-    } catch (error) {
-      console.error('Error updating device:', error);
-      Alert.alert('Error', 'Failed to update device');
-    }
-  };
-
-  const handleDeleteDevice = (deviceId: string) => {
-    Alert.alert('Delete Device', 'Are you sure you want to delete this device?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            const updatedDevices = devices.filter((device) => device.id !== deviceId);
-            await deviceService.saveDevices(updatedDevices);
-            setDevices(updatedDevices);
-          } catch (error) {
-            console.error('Error deleting device:', error);
-            Alert.alert('Error', 'Failed to delete device');
-          }
-        },
-      },
-    ]);
-  };
 
   const handleClearAllDevices = () => {
     Alert.alert(
@@ -288,98 +165,82 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </View>
 
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <LayoutGrid size={20} color="#0891b2" />
-              <Text style={styles.sectionTitle}>Widget &amp; Control Center</Text>
-            </View>
+          {/* The Home Screen widget and Control Center button exist only on iOS. */}
+          {Platform.OS === 'ios' ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <LayoutGrid size={20} color="#0891b2" />
+                <Text style={styles.sectionTitle}>Widget &amp; Control Center</Text>
+              </View>
 
-            {devices.length > 0 ? (
-              <>
-                <Text style={styles.companionDescription}>
-                  Pick the PC your Home Screen widget and Control Center button wake. To give one
-                  widget a different PC, hold it on the Home Screen and choose Edit Widget.
+              {devices.length > 0 ? (
+                <>
+                  <Text style={styles.companionDescription}>
+                    Pick the PC your Home Screen widget and Control Center button wake. To give one
+                    widget a different PC, hold it on the Home Screen and choose Edit Widget.
+                  </Text>
+
+                  {devices.map((device) => {
+                    const isWidgetDevice = resolveWidgetDevice(devices, favoriteId)?.id === device.id;
+
+                    return (
+                      <TouchableOpacity
+                        key={device.id}
+                        style={[styles.widgetOption, isWidgetDevice && styles.widgetOptionSelected]}
+                        onPress={() => { void handleSelectWidgetDevice(device); }}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: isWidgetDevice }}
+                        accessibilityLabel={
+                          isWidgetDevice
+                            ? `${device.name} is the computer the widget wakes`
+                            : `Use ${device.name} for the widget`
+                        }
+                      >
+                        <Star
+                          size={20}
+                          color={isWidgetDevice ? '#fbbf24' : '#4b6470'}
+                          fill={isWidgetDevice ? '#fbbf24' : 'transparent'}
+                        />
+
+                        <View style={styles.widgetOptionText}>
+                          <Text style={styles.deviceName}>{device.name}</Text>
+                          <Text style={styles.deviceLine}>
+                            {isWidgetDevice ? `${device.ip} • Widget default` : device.ip}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              ) : (
+                <Text style={styles.noDevicesText}>
+                  Add a computer first, then choose which one the widget wakes.
                 </Text>
-
-                {devices.map((device) => {
-                  const isWidgetDevice = resolveWidgetDevice(devices, favoriteId)?.id === device.id;
-
-                  return (
-                    <TouchableOpacity
-                      key={device.id}
-                      style={[styles.widgetOption, isWidgetDevice && styles.widgetOptionSelected]}
-                      onPress={() => { void handleSelectWidgetDevice(device); }}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: isWidgetDevice }}
-                      accessibilityLabel={
-                        isWidgetDevice
-                          ? `${device.name} is the computer the widget wakes`
-                          : `Use ${device.name} for the widget`
-                      }
-                    >
-                      <Star
-                        size={20}
-                        color={isWidgetDevice ? '#fbbf24' : '#4b6470'}
-                        fill={isWidgetDevice ? '#fbbf24' : 'transparent'}
-                      />
-
-                      <View style={styles.widgetOptionText}>
-                        <Text style={styles.deviceName}>{device.name}</Text>
-                        <Text style={styles.deviceLine}>
-                          {isWidgetDevice ? `${device.ip} • Widget default` : device.ip}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </>
-            ) : (
-              <Text style={styles.noDevicesText}>
-                Add a computer first, then choose which one the widget wakes.
-              </Text>
-            )}
-          </View>
-
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Wifi size={20} color="#0891b2" />
-              <Text style={styles.sectionTitle}>Saved Devices</Text>
+              )}
             </View>
+          ) : null}
 
-            {devices.length > 0 ? (
-              devices.map((device) => (
-                <View key={device.id} style={styles.deviceItem}>
-                  <View style={styles.deviceInfo}>
-                    <Text style={styles.deviceName}>{device.name}</Text>
-                    <Text style={styles.deviceLine}>Ping: {device.ip}</Text>
-                    <Text style={styles.deviceLine}>MAC: {device.mac}</Text>
-                    <Text style={styles.deviceLine}>
-                      Wake: {device.wakeAddress}:{device.wakePort}
-                    </Text>
-                  </View>
+          {/* Each computer is renamed or removed from its own page in the device
+              list. Settings used to list them again with a second edit form,
+              which showed the same details twice. */}
+          {devices.length > 0 ? (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Trash size={20} color="#0891b2" />
+                <Text style={styles.sectionTitle}>Reset</Text>
+              </View>
 
-                  <View style={styles.deviceActions}>
-                    <TouchableOpacity style={styles.actionButton} onPress={() => handleEditDevice(device)}>
-                      <Edit size={20} color="#0891b2" />
-                    </TouchableOpacity>
+              <Text style={styles.companionDescription}>
+                Removes every saved computer and its pairing from this phone. To rename or remove
+                one computer, open it from the device list.
+              </Text>
 
-                    <TouchableOpacity style={styles.actionButton} onPress={() => handleDeleteDevice(device.id)}>
-                      <Trash size={20} color="#ef4444" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))
-            ) : (
-              <Text style={styles.noDevicesText}>No devices added yet.</Text>
-            )}
-
-            {devices.length > 0 ? (
               <TouchableOpacity style={styles.clearAllButton} onPress={handleClearAllDevices}>
                 <Trash size={18} color="#ffffff" />
                 <Text style={styles.clearAllText}>Clear All Devices</Text>
               </TouchableOpacity>
-            ) : null}
-          </View>
+            </View>
+          ) : null}
 
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
@@ -397,103 +258,6 @@ export default function SettingsScreen() {
           </View>
         </View>
       </ScrollView>
-
-      <Modal
-        visible={modalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={closeModal}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={insets.top}
-          style={styles.modalOverlay}
-        >
-          <View style={styles.modalShell}>
-            <ScrollView
-              contentContainerStyle={[
-                styles.modalContent,
-                {
-                  paddingBottom: insets.bottom + 20,
-                },
-              ]}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              <Text style={styles.modalTitle}>Edit Device</Text>
-
-              <Text style={styles.inputLabel}>Device Name</Text>
-              <TextInput
-                style={styles.input}
-                value={editName}
-                onChangeText={setEditName}
-                placeholder="My Computer"
-                placeholderTextColor="#6b7280"
-              />
-
-              <Text style={styles.inputLabel}>MAC Address</Text>
-              <TextInput
-                style={styles.input}
-                value={editMac}
-                onChangeText={setEditMac}
-                placeholder="00:11:22:33:44:55"
-                placeholderTextColor="#6b7280"
-                autoCapitalize="characters"
-                autoCorrect={false}
-              />
-              <Text style={styles.helpText}>Required for Wake-on-LAN while the PC is powered off.</Text>
-
-              <Text style={styles.inputLabel}>Ping Address</Text>
-              <TextInput
-                style={styles.input}
-                value={editIp}
-                onChangeText={setEditIp}
-                placeholder="192.168.1.100"
-                placeholderTextColor="#6b7280"
-                keyboardType="decimal-pad"
-                autoCorrect={false}
-              />
-              <Text style={styles.helpText}>Used to check status and send commands once the PC is online.</Text>
-
-              <Text style={styles.inputLabel}>Wake Address</Text>
-              <TextInput
-                style={styles.input}
-                value={editWakeAddress}
-                onChangeText={setEditWakeAddress}
-                placeholder={getSuggestedWakeAddress(editIp) || '192.168.1.255'}
-                placeholderTextColor="#6b7280"
-                keyboardType="decimal-pad"
-                autoCorrect={false}
-              />
-              <Text style={styles.helpText}>
-                Wake-on-LAN target. Leave this blank to use {getSuggestedWakeAddress(editIp) || 'the broadcast for your ping address'}.
-              </Text>
-
-              <Text style={styles.inputLabel}>Wake Port</Text>
-              <TextInput
-                style={styles.input}
-                value={editWakePort}
-                onChangeText={setEditWakePort}
-                placeholder={String(DEFAULT_WAKE_PORT)}
-                placeholderTextColor="#6b7280"
-                keyboardType="number-pad"
-              />
-              <Text style={styles.helpText}>Most devices use port 9, but some networks use 7 or 0.</Text>
-
-              <View style={styles.modalButtons}>
-                <TouchableOpacity style={styles.cancelButton} onPress={closeModal}>
-                  <Text style={styles.cancelButtonText}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
-                  <Save size={16} color="#ffffff" />
-                  <Text style={styles.saveButtonText}>Save</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
     </View>
   );
 }
@@ -575,40 +339,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginLeft: 8,
   },
-  inputLabel: {
-    color: '#f8fbff',
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 8,
-    marginTop: 14,
-  },
-  input: {
-    backgroundColor: '#0f171c',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    color: '#f8fbff',
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#17323b',
-  },
-  helpText: {
-    color: '#7f97a1',
-    fontSize: 12,
-    marginTop: 8,
-    lineHeight: 18,
-  },
-  deviceItem: {
-    backgroundColor: '#0f171c',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12,
-    borderWidth: 1,
-    borderColor: '#17323b',
-  },
   widgetOption: {
     backgroundColor: '#0f171c',
     borderRadius: 16,
@@ -629,9 +359,6 @@ const styles = StyleSheet.create({
   widgetOptionText: {
     flex: 1,
   },
-  deviceInfo: {
-    flex: 1,
-  },
   deviceName: {
     color: '#f8fbff',
     fontSize: 16,
@@ -642,20 +369,6 @@ const styles = StyleSheet.create({
     color: '#7f97a1',
     fontSize: 13,
     lineHeight: 18,
-  },
-  deviceActions: {
-    justifyContent: 'center',
-    gap: 8,
-  },
-  actionButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#091117',
-    borderWidth: 1,
-    borderColor: '#17323b',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   noDevicesText: {
     color: '#8aa1ab',
@@ -714,60 +427,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 8,
     lineHeight: 20,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    justifyContent: 'flex-end',
-  },
-  modalShell: {
-    maxHeight: '92%',
-  },
-  modalContent: {
-    backgroundColor: '#0b1217',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingHorizontal: 18,
-    paddingTop: 20,
-    borderTopWidth: 1,
-    borderColor: '#16313a',
-  },
-  modalTitle: {
-    color: '#f8fbff',
-    fontSize: 22,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-  },
-  cancelButton: {
-    flex: 1,
-    backgroundColor: '#0f171c',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#17323b',
-  },
-  cancelButtonText: {
-    color: '#ffffff',
-    fontWeight: '600',
-  },
-  saveButton: {
-    flex: 1,
-    backgroundColor: '#0891b2',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  saveButtonText: {
-    color: '#ffffff',
-    fontWeight: '700',
-    marginLeft: 8,
   },
 });

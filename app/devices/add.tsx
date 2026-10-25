@@ -18,7 +18,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
 import { useServer } from '../../src/context/ServerContext';
-import deviceService from '../services/deviceService';
+import deviceService from '../../src/services/deviceService';
 import { inferDevicePlatformFromName, normalizeDevicePlatform } from '../../src/utils/devicePlatform';
 import {
   DEFAULT_WAKE_PORT,

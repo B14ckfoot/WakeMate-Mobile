@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
@@ -14,7 +15,7 @@ import { Plus, RefreshCw, ScanQrCode, Search, Settings } from 'lucide-react-nati
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
-import deviceService from '../services/deviceService';
+import deviceService from '../../src/services/deviceService';
 import {
   getFavoriteDeviceId,
   setFavoriteDeviceId,
@@ -191,25 +192,11 @@ export default function DevicesScreen() {
     }
   }, []);
 
+  // Long-press always opens the device's own page (wake, edit, delete), even
+  // while the PC is online and a tap would go straight to the remote. The old
+  // menu repeated the header's Settings button and the row's widget star.
   const handleLongPress = (device: Device) => {
-    Alert.alert(device.name, 'Choose an option', [
-      {
-        text: 'Use for Widget',
-        onPress: () => { void handleSelectWidgetDevice(device); },
-      },
-      {
-        text: 'Edit Device',
-        onPress: () => router.push(`/devices/edit/${device.id}`),
-      },
-      {
-        text: 'Settings',
-        onPress: () => router.push('/settings'),
-      },
-      {
-        text: 'Cancel',
-        style: 'cancel',
-      },
-    ]);
+    router.push(`/devices/${device.id}`);
   };
 
   const handlePressDevice = useCallback(async (device: Device) => {
@@ -244,6 +231,8 @@ export default function DevicesScreen() {
     }
   }, [router]);
 
+  const supportsWidget = Platform.OS === 'ios';
+
   // No favorite yet means the widget falls back to the first saved computer,
   // so show that one as the effective default rather than showing none.
   const effectiveFavoriteId =
@@ -255,8 +244,10 @@ export default function DevicesScreen() {
       onDelete={handleDeleteDevice}
       onPress={(device) => { void handlePressDevice(device); }}
       onLongPress={handleLongPress}
-      isFavorite={item.id === effectiveFavoriteId}
-      onSelectFavorite={(device) => { void handleSelectWidgetDevice(device); }}
+      // The widget and Control Center button are iOS-only, so Android rows
+      // show no widget star or "Widget default" label.
+      isFavorite={supportsWidget && item.id === effectiveFavoriteId}
+      onSelectFavorite={supportsWidget ? (device) => { void handleSelectWidgetDevice(device); } : undefined}
     />
   );
 
@@ -360,7 +351,7 @@ export default function DevicesScreen() {
               />
             </View>
             <Text style={styles.emptyText}>No devices found</Text>
-            <Text style={styles.emptySubtext}>Scan your network or add a machine manually to start waking and controlling it from here.</Text>
+            <Text style={styles.emptySubtext}>Scan the QR code in the WakeMATE Companion tray menu on your PC to pair it, then wake and control it from here.</Text>
           </View>
         )}
       </View>
@@ -385,21 +376,23 @@ export default function DevicesScreen() {
 
           <TouchableOpacity
             style={[styles.bottomButton, styles.halfBottomButton, styles.secondaryBottomButton]}
-            onPress={() => router.push('/devices/scan-qr')}
-            accessibilityLabel="Scan a device QR code"
+            onPress={() => router.push('/devices/add')}
+            accessibilityLabel="Add a device by entering its details"
           >
-            <ScanQrCode size={18} color="#67e8f9" />
-            <Text style={styles.secondaryBottomButtonText}>Scan QR Code</Text>
+            <Plus size={18} color="#67e8f9" />
+            <Text style={styles.secondaryBottomButtonText}>Enter Manually</Text>
           </TouchableOpacity>
         </View>
 
+        {/* Scanning the Companion's tray QR code pairs, pins its certificate,
+            and saves the PC in one step, so it is the primary way to add one. */}
         <TouchableOpacity
           style={[styles.bottomButton, styles.primaryBottomButton]}
-          onPress={() => router.push('/devices/add')}
-          accessibilityLabel="Add a device"
+          onPress={() => router.push('/devices/scan-qr')}
+          accessibilityLabel="Pair a computer by scanning its WakeMATE QR code"
         >
-          <Plus size={18} color="#ffffff" />
-          <Text style={styles.primaryBottomButtonText}>Add Device</Text>
+          <ScanQrCode size={18} color="#ffffff" />
+          <Text style={styles.primaryBottomButtonText}>Scan Pairing QR Code</Text>
         </TouchableOpacity>
       </View>
     </View>
