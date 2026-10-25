@@ -96,65 +96,72 @@ export default function CompanionSetupPrompt() {
       onRequestClose={dismiss}
       testID="companion-setup-prompt"
     >
-      <ScrollView
-        contentContainerStyle={[
+      <View
+        style={[
           styles.overlay,
           {
             paddingTop: Math.max(insets.top, 20),
             paddingBottom: Math.max(insets.bottom, 20),
           },
         ]}
-        alwaysBounceVertical={false}
-        showsVerticalScrollIndicator={false}
       >
+        {/* Only the explanation scrolls. On a short screen the whole card used
+            to scroll as one piece, which left "Maybe Later" under the Android
+            navigation bar with no sign that more was below. */}
         <View style={styles.card} accessibilityViewIsModal>
-          <View style={styles.iconWrap} accessible={false}>
-            <View style={styles.iconHalo} />
-            <MonitorDown size={34} color="#67e8f9" strokeWidth={1.9} />
-          </View>
-
-          <Text style={styles.eyebrow}>ONE-TIME SETUP</Text>
-          <Text style={styles.title} accessibilityRole="header">
-            Connect your Windows PC
-          </Text>
-          <Text style={styles.intro}>
-            Install the free WakeMATE Companion to discover your PC and enable secure remote controls.
-          </Text>
-
-          <View style={styles.steps}>
-            <View style={styles.stepRow}>
-              <View style={styles.stepIcon} accessible={false}>
-                <MonitorDown size={20} color="#67e8f9" />
-              </View>
-              <View style={styles.stepCopy}>
-                <Text style={styles.stepTitle}>Download on your PC</Text>
-                <Text style={styles.stepBody}>
-                  Visit wakematemobile.com from the Windows PC you want to control and install the Companion.
-                </Text>
-              </View>
+          <ScrollView
+            style={styles.cardBody}
+            alwaysBounceVertical={false}
+            persistentScrollbar
+          >
+            <View style={styles.iconWrap} accessible={false}>
+              <View style={styles.iconHalo} />
+              <MonitorDown size={34} color="#67e8f9" strokeWidth={1.9} />
             </View>
 
-            <View style={styles.divider} />
-
-            <View style={styles.stepRow}>
-              <View style={styles.stepIcon} accessible={false}>
-                <QrCode size={20} color="#67e8f9" />
-              </View>
-              <View style={styles.stepCopy}>
-                <Text style={styles.stepTitle}>Scan the tray QR code</Text>
-                <Text style={styles.stepBody}>
-                  Open Companion from the Windows system tray, choose View Pairing QR Code, then scan it here in WakeMATE.
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.localNote}>
-            <ShieldCheck size={18} color="#22d3ee" accessible={false} />
-            <Text style={styles.localNoteText}>
-              The website is only for the download. Pairing stays directly between this app and your computer.
+            <Text style={styles.eyebrow}>ONE-TIME SETUP</Text>
+            <Text style={styles.title} accessibilityRole="header">
+              Connect your Windows PC
             </Text>
-          </View>
+            <Text style={styles.intro}>
+              Install the free WakeMATE Companion to discover your PC and enable secure remote controls.
+            </Text>
+
+            <View style={styles.steps}>
+              <View style={styles.stepRow}>
+                <View style={styles.stepIcon} accessible={false}>
+                  <MonitorDown size={20} color="#67e8f9" />
+                </View>
+                <View style={styles.stepCopy}>
+                  <Text style={styles.stepTitle}>Download on your PC</Text>
+                  <Text style={styles.stepBody}>
+                    Visit wakematemobile.com from the Windows PC you want to control and install the Companion.
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.stepRow}>
+                <View style={styles.stepIcon} accessible={false}>
+                  <QrCode size={20} color="#67e8f9" />
+                </View>
+                <View style={styles.stepCopy}>
+                  <Text style={styles.stepTitle}>Scan the tray QR code</Text>
+                  <Text style={styles.stepBody}>
+                    Click the WakeMATE icon in the Windows system tray, choose QR Code, then scan it here in WakeMATE.
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.localNote}>
+              <ShieldCheck size={18} color="#22d3ee" accessible={false} />
+              <Text style={styles.localNoteText}>
+                The website is only for the download. Pairing stays directly between this app and your computer.
+              </Text>
+            </View>
+          </ScrollView>
 
           <TouchableOpacity
             style={styles.primaryButton}
@@ -179,14 +186,18 @@ export default function CompanionSetupPrompt() {
             <Text style={styles.laterButtonText}>Maybe Later</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  cardBody: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
   overlay: {
-    flexGrow: 1,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(1, 5, 8, 0.88)',
@@ -195,6 +206,7 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxWidth: 440,
+    maxHeight: '100%',
     borderRadius: 28,
     borderWidth: 1,
     borderColor: '#1c3b45',

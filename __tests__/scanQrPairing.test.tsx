@@ -63,7 +63,7 @@ jest.mock('lucide-react-native', () => ({
   ArrowLeft: () => null,
 }));
 
-jest.mock('../app/services/deviceService', () => ({
+jest.mock('../src/services/deviceService', () => ({
   __esModule: true,
   default: {
     discoverCompanions: () => mockDiscoverCompanions(),

@@ -15,7 +15,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Save } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../../src/types/device';
-import deviceService from '../../services/deviceService';
+import deviceService from '../../../src/services/deviceService';
 import {
   DEFAULT_COMPANION_API_PORT,
   DEFAULT_WAKE_PORT,

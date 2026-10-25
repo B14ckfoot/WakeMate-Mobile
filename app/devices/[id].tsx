@@ -12,7 +12,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Edit, Monitor, Power, RefreshCw, Settings, Trash2 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Device } from '../../src/types/device';
-import deviceService from '../services/deviceService';
+import deviceService from '../../src/services/deviceService';
 import { useFocusedPolling } from '../../src/hooks/useFocusedPolling';
 
 const DEVICE_STATUS_POLL_INTERVAL_MS = 5000;

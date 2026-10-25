@@ -75,7 +75,7 @@ jest.mock('lucide-react-native', () => ({
   Trash2: () => null,
 }));
 
-jest.mock('../app/services/deviceService', () => ({
+jest.mock('../src/services/deviceService', () => ({
   __esModule: true,
   default: {
     getDevices: () => mockGetDevices(),

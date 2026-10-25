@@ -24,6 +24,7 @@ import {
   ChevronUp,
   Command,
   Keyboard as KeyboardIcon,
+  Lock,
   LogOut,
   Minus,
   Monitor,
@@ -39,6 +40,7 @@ import {
   ShieldAlert,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   VolumeX,
   X,
 } from 'lucide-react-native';
@@ -195,21 +197,10 @@ const SettingsSlider: React.FC<SettingsSliderProps> = ({ label, description, val
   );
 };
 
-const getModifierKeys = (platform: DevicePlatform): QuickKey[] =>
-  platform === 'mac'
-    ? [
-        { label: 'Shift', keyValue: 'shift' },
-        { label: 'Command', keyValue: 'command' },
-        { label: 'Option', keyValue: 'option' },
-        { label: 'Control', keyValue: 'control' },
-      ]
-    : [
-        { label: 'Shift', keyValue: 'shift' },
-        { label: 'Ctrl', keyValue: 'ctrl' },
-        { label: 'Win', keyValue: 'win' },
-        { label: 'Alt', keyValue: 'alt' },
-      ];
-
+// Shift, Ctrl, Alt, Command, and Option used to have their own buttons. Each
+// tap sent a lone press and release, which does nothing on the desktop, so
+// they were dropped in favor of the combos below. The Windows key is the one
+// modifier that acts alone (it opens Start), so it stays as a shortcut.
 const getProductivityShortcuts = (platform: DevicePlatform): QuickKey[] =>
   platform === 'mac'
     ? [
@@ -221,6 +212,7 @@ const getProductivityShortcuts = (platform: DevicePlatform): QuickKey[] =>
         { label: 'Option+Shift', keyValue: 'option+shift', wide: true },
       ]
     : [
+        { label: 'Win', keyValue: 'win' },
         { label: 'Ctrl+C', keyValue: 'ctrl+c' },
         { label: 'Ctrl+V', keyValue: 'ctrl+v' },
         { label: 'Ctrl+Z', keyValue: 'ctrl+z' },
@@ -244,7 +236,6 @@ export default function DeviceControlScreen() {
   const [savedDevices, setSavedDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<ControlTab>('mouse');
-  const [isPlaying, setIsPlaying] = useState(false);
   const [isSettingsVisible, setIsSettingsVisible] = useState(false);
   const [keyboardText, setKeyboardText] = useState('');
   const [isSendingKeyboard, setIsSendingKeyboard] = useState(false);
@@ -963,7 +954,6 @@ export default function DeviceControlScreen() {
     )
   );
   const primaryShortcutModifier = getPrimaryShortcutModifier(devicePlatform);
-  const modifierKeys = getModifierKeys(devicePlatform);
   const productivityShortcuts = getProductivityShortcuts(devicePlatform);
   const keyboardAccessoryTitle =
     keyboardAccessoryMode === 'functions' ? 'Fn Keys' : `${primaryShortcutModifier.label} Keys`;
@@ -978,9 +968,10 @@ export default function DeviceControlScreen() {
     if (command === 'play_pause') {
       void runCommand(() => deviceService.sendMediaPlayPause(device.id, device.ip), {
         errorTitle: 'Play or pause failed',
-        successMessage: isPlaying ? 'Paused' : 'Playing',
+        // The companion cannot see whether media is playing, so the phone
+        // reports what it did rather than guessing the resulting state.
+        successMessage: 'Play/pause sent',
         successHaptic: 'light',
-        onSuccess: () => setIsPlaying((current) => !current),
       });
       return;
     }
@@ -1005,7 +996,7 @@ export default function DeviceControlScreen() {
       successMessage: labelMap[command],
       successHaptic: 'light',
     });
-  }, [device, isPlaying, runCommand, status]);
+  }, [device, runCommand, status]);
 
   const handleHardwareVolumeRemoteStep = useCallback((direction: 'up' | 'down') => {
     if (!device || status !== 'online' || setupMessage) {
@@ -1133,8 +1124,18 @@ export default function DeviceControlScreen() {
     ]);
   }, [runCommand]);
 
-  const handlePowerCommand = useCallback((command: 'sleep' | 'restart' | 'shutdown' | 'logoff') => {
+  const handlePowerCommand = useCallback((command: 'lock' | 'sleep' | 'restart' | 'shutdown' | 'logoff') => {
     if (!device || status !== 'online') {
+      return;
+    }
+
+    // Locking is undone by signing back in, so it needs no confirmation.
+    if (command === 'lock') {
+      void runCommand(() => deviceService.sendLock(device.id, device.ip), {
+        errorTitle: 'Lock command failed',
+        successMessage: 'Lock command sent',
+        successHaptic: 'success',
+      });
       return;
     }
 
@@ -1451,23 +1452,6 @@ export default function DeviceControlScreen() {
             contentContainerStyle={styles.keyboardAccessoryRow}
             keyboardShouldPersistTaps="handled"
           >
-            {modifierKeys.map((item) => (
-              <TouchableOpacity
-                key={item.label}
-                style={styles.keyboardAccessoryKey}
-                onPress={() => handleKeyboardQuickKey(item.keyValue, item.label)}
-              >
-                <Text style={styles.keyboardAccessoryKeyText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.keyboardAccessoryRow}
-            keyboardShouldPersistTaps="handled"
-          >
             {productivityShortcuts.map((item) => (
               <TouchableOpacity
                 key={item.label}
@@ -1507,24 +1491,6 @@ export default function DeviceControlScreen() {
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
-            <View style={[styles.keySection, styles.keySurfaceCard]}>
-              <View style={styles.keySectionHeader}>
-                <Text style={styles.keySectionTitle}>Modifiers</Text>
-                <Text style={styles.keySectionMeta}>System</Text>
-              </View>
-              <View style={styles.modifierRow}>
-                {modifierKeys.map((item) => (
-                  <TouchableOpacity
-                    key={item.label}
-                    style={styles.modifierKey}
-                    onPress={() => handleSpecialKey(item.keyValue, item.label)}
-                  >
-                    <Text style={styles.modifierKeyText}>{item.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
             <View style={[styles.keySection, styles.keySurfaceCard]}>
               <View style={styles.keySectionHeader}>
                 <Text style={styles.keySectionTitle}>Navigation</Text>
@@ -1665,33 +1631,63 @@ export default function DeviceControlScreen() {
       <View style={styles.mediaDeck}>
         <View style={styles.mediaWheel}>
           <View style={styles.mediaTransportRow}>
-            <TouchableOpacity style={styles.mediaButton} onPress={() => handleMediaCommand('previous')}>
+            <TouchableOpacity
+              style={styles.mediaButton}
+              onPress={() => handleMediaCommand('previous')}
+              accessibilityRole="button"
+              accessibilityLabel="Previous track"
+            >
               <SkipBack size={22} color="#f5f6fb" />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={[styles.mediaButton, styles.mediaButtonPrimary]}
               onPress={() => handleMediaCommand('play_pause')}
+              accessibilityRole="button"
+              accessibilityLabel="Play or pause"
             >
-              {isPlaying ? <Pause size={26} color="#ffffff" /> : <Play size={26} color="#ffffff" />}
+              <View style={styles.playPauseGlyph}>
+                <Play size={20} color="#ffffff" />
+                <Pause size={20} color="#ffffff" />
+              </View>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.mediaButton} onPress={() => handleMediaCommand('next')}>
+            <TouchableOpacity
+              style={styles.mediaButton}
+              onPress={() => handleMediaCommand('next')}
+              accessibilityRole="button"
+              accessibilityLabel="Next track"
+            >
               <SkipForward size={22} color="#f5f6fb" />
             </TouchableOpacity>
           </View>
         </View>
 
         <View style={styles.mediaStack}>
-          <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('volume_up')}>
+          <TouchableOpacity
+            style={styles.mediaStackButton}
+            onPress={() => handleMediaCommand('volume_up')}
+            accessibilityRole="button"
+            accessibilityLabel="Volume up"
+          >
             <Plus size={20} color="#f5f6fb" />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('mute')}>
+          <TouchableOpacity
+            style={styles.mediaStackButton}
+            onPress={() => handleMediaCommand('mute')}
+            accessibilityRole="button"
+            accessibilityLabel="Mute"
+          >
             <VolumeX size={20} color="#f5f6fb" />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.mediaStackButton} onPress={() => handleMediaCommand('volume_down')}>
+          <TouchableOpacity
+            style={styles.mediaStackButton}
+            onPress={() => handleMediaCommand('volume_down')}
+            accessibilityRole="button"
+            accessibilityLabel="Volume down"
+          >
             <Minus size={20} color="#f5f6fb" />
           </TouchableOpacity>
         </View>
@@ -1701,6 +1697,11 @@ export default function DeviceControlScreen() {
 
   const renderPowerPanel = () => (
     <View style={[styles.panelCard, styles.powerPanelCard]}>
+      <TouchableOpacity style={styles.powerLockButton} onPress={() => handlePowerCommand('lock')}>
+        <Lock size={20} color="#ffffff" />
+        <Text style={styles.powerButtonText}>Lock</Text>
+      </TouchableOpacity>
+
       <View style={styles.powerGrid}>
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('shutdown')}>
           <Power size={22} color="#ffffff" />
@@ -1719,7 +1720,7 @@ export default function DeviceControlScreen() {
 
         <TouchableOpacity style={styles.powerButton} onPress={() => handlePowerCommand('logoff')}>
           <LogOut size={22} color="#ffffff" />
-          <Text style={styles.powerButtonText}>Logoff</Text>
+          <Text style={styles.powerButtonText}>Log Off</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -1783,7 +1784,12 @@ export default function DeviceControlScreen() {
           ]}
         >
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={styles.headerButton}
+              accessibilityRole="button"
+              accessibilityLabel="Back to devices"
+            >
               <ArrowLeft size={22} color="#67e8f9" />
             </TouchableOpacity>
 
@@ -1792,7 +1798,12 @@ export default function DeviceControlScreen() {
               <Text style={styles.headerTitle}>Control Device</Text>
             </View>
 
-            <TouchableOpacity onPress={() => router.push('/settings')} style={styles.headerButton}>
+            <TouchableOpacity
+              onPress={() => router.push('/settings')}
+              style={styles.headerButton}
+              accessibilityRole="button"
+              accessibilityLabel="App settings"
+            >
               <Settings size={20} color="#67e8f9" />
             </TouchableOpacity>
           </View>
@@ -1983,9 +1994,11 @@ export default function DeviceControlScreen() {
                   <TouchableOpacity
                     style={[styles.tabButton, styles.settingsDockButton, isSettingsVisible && styles.activeTabButton]}
                     onPress={() => setIsSettingsVisible(true)}
-                    accessibilityLabel="Open control settings"
+                    accessibilityLabel="Touchpad and remote settings"
                   >
-                    <Settings size={17} color={isSettingsVisible ? '#ecfeff' : '#a8a8ba'} />
+                    {/* Sliders, not a gear: the header gear opens app settings,
+                        and two identical icons on one screen read as one. */}
+                    <SlidersHorizontal size={17} color={isSettingsVisible ? '#ecfeff' : '#a8a8ba'} />
                   </TouchableOpacity>
                 </View>
 
@@ -2920,27 +2933,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
-  modifierRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    justifyContent: 'space-between',
-  },
-  modifierKey: {
-    flexBasis: '23%',
-    minWidth: 0,
-    minHeight: 34,
-    borderRadius: 12,
-    backgroundColor: '#272b35',
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modifierKeyText: {
-    color: '#f5f6fb',
-    fontSize: 11,
-    fontWeight: '700',
-  },
   keyGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -3078,6 +3070,11 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
+  playPauseGlyph: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 1,
+  },
   mediaPanelCard: {
     gap: 10,
     padding: 12,
@@ -3132,6 +3129,16 @@ const styles = StyleSheet.create({
   },
   powerPanelCard: {
     padding: 12,
+  },
+  powerLockButton: {
+    minHeight: 52,
+    borderRadius: 18,
+    backgroundColor: '#252934',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
   },
   powerGrid: {
     flexDirection: 'row',
