@@ -60,7 +60,7 @@ describe('parseStructuredPairingQr', () => {
     });
   });
 
-  it('keeps a legacy v2 JSON contract without TLS compatible', () => {
+  it('keeps a legacy v2 JSON contract compatible when it includes TLS', () => {
     const result = parseStructuredPairingQr(
       JSON.stringify({
         v: 2,
@@ -70,6 +70,8 @@ describe('parseStructuredPairingQr', () => {
         mac: '001122334455',
         port: '7777',
         api_token: 'legacy-token',
+        tls_port: 7778,
+        fp: normalizedFingerprint,
       })
     );
 
@@ -82,9 +84,9 @@ describe('parseStructuredPairingQr', () => {
         connection: {
           token: 'legacy-token',
           apiPort: 7777,
-          tlsPort: null,
-          tlsFingerprint: null,
-          hasTlsMetadata: false,
+          tlsPort: 7778,
+          tlsFingerprint: normalizedFingerprint,
+          hasTlsMetadata: true,
           hasValidTlsMetadata: true,
         },
       },
@@ -92,6 +94,7 @@ describe('parseStructuredPairingQr', () => {
   });
 
   it.each([
+    ['v2 without TLS', v3Payload({ v: 2, tls_port: undefined, fp: undefined }), 'invalid_tls_metadata'],
     ['a bare token', 'legacy-token', 'malformed'],
     ['a web link', 'https://wakematemobile.com/pair?token=abc', 'malformed'],
     ['an array', JSON.stringify([{ token: 'abc' }]), 'malformed'],

@@ -177,7 +177,7 @@ export default function ScanDeviceQrScreen() {
           });
 
           if (result.status === 'approved') {
-            pairingSummary = ' Remote controls are enabled.';
+            pairingSummary = ' Pairing was approved. Available controls follow the permissions selected on the computer.';
           } else if (result.status === 'unsupported') {
             pairingSummary = ' Pairing was requested. This older Companion cannot confirm approval in the app, so approve the prompt on the computer before using remote controls.';
           } else if (result.status === 'denied') {

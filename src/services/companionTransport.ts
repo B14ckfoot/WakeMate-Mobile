@@ -3,6 +3,12 @@ import { requestPinnedHttps } from '../../modules/wakemate-tls';
 
 type CompanionHttpMethod = 'GET' | 'POST';
 
+export const SECURE_PAIRING_REQUIRED_MESSAGE =
+  'Secure pairing is missing or invalid. Update WakeMATE Companion and scan its current pairing QR code from the Devices screen before using controls.';
+
+export const SECURE_STORAGE_UNAVAILABLE_MESSAGE =
+  'Secure credential storage is unavailable. Unlock this phone and reopen WakeMATE; if the problem continues, scan the computer\u2019s pairing QR code again.';
+
 export type CompanionTransportResponse<T> = {
   data: T;
   status: number;
@@ -86,8 +92,22 @@ export async function requestCompanion<T>({
   tlsFingerprint,
 }: CompanionRequestOptions): Promise<CompanionTransportResponse<T>> {
   const fingerprint = normalizeTlsFingerprint(tlsFingerprint);
+  const requestPath = path.startsWith('/') ? path : `/${path}`;
+  const hasCredentials = Object.keys(headers).some((name) =>
+    ['x-wakemate-token', 'authorization', 'proxy-authorization', 'cookie'].includes(
+      name.toLowerCase()
+    )
+  );
+  // Only the public health probe may use plaintext. In particular, a missing
+  // keychain entry is never permission to send a saved credential over HTTP.
+  // Reject malformed supplied pins even for public probes instead of erasing
+  // the caller's expectation that this connection was secured.
+  const publicHealthProbe = method === 'GET' && requestPath === '/v1/health' && !hasCredentials && data == null;
+  if (!fingerprint && (tlsFingerprint != null || !publicHealthProbe)) {
+    throw new Error(SECURE_PAIRING_REQUIRED_MESSAGE);
+  }
   const baseUrl = buildCompanionBaseUrl(ip, port, fingerprint);
-  const url = `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+  const url = `${baseUrl}${requestPath}`;
 
   if (!fingerprint) {
     const response = await axios.request<T>({

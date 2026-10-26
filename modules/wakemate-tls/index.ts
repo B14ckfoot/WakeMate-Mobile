@@ -30,7 +30,7 @@ export async function requestPinnedHttps(
 ): Promise<PinnedHttpsResponse> {
   if (!nativeModule) {
     throw new Error(
-      'Pinned HTTPS requires a current WakeMATE native build. Rebuild the app after installing Stage 2.'
+      'Secure pairing requires the WakeMATE native app with certificate pinning. Install a current development or release build; Expo Go cannot provide secure companion controls.'
     );
   }
 

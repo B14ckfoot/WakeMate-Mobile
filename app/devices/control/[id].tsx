@@ -64,6 +64,7 @@ import {
   normalizeDevicePlatform,
 } from '../../../src/utils/devicePlatform';
 import { useFocusedPolling } from '../../../src/hooks/useFocusedPolling';
+import { useMouseHoldLease } from '../../../src/hooks/useMouseHoldLease';
 
 type ControlTab = 'mouse' | 'keyboard' | 'keys' | 'media' | 'power';
 type FeedbackTone = 'info' | 'success' | 'warning';
@@ -264,12 +265,12 @@ export default function DeviceControlScreen() {
   const securityCommandInFlightRef = useRef(false);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTouchpadCommandErrorRef = useRef<string | null>(null);
+  const cancelMouseHoldRef = useRef<() => void>(() => {});
   const lastTouchpadTranslationRef = useRef({ x: 0, y: 0 });
   const pendingMouseMoveRef = useRef({ x: 0, y: 0 });
   const pendingScrollRef = useRef(0);
   const mouseMoveRequestInFlightRef = useRef(false);
   const dragHoldTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dragActivationPendingRef = useRef(false);
   const isDraggingRef = useRef(false);
   const gestureModeRef = useRef<TouchpadMode>('pointer');
   const twoFingerTapCandidateRef = useRef<TwoFingerTapCandidate | null>(null);
@@ -513,6 +514,7 @@ export default function DeviceControlScreen() {
   );
 
   const handleTouchpadCommandError = useCallback((error: unknown) => {
+    cancelMouseHoldRef.current();
     const message = error instanceof Error ? error.message : 'Trackpad command failed';
 
     if (lastTouchpadCommandErrorRef.current === message) {
@@ -534,6 +536,23 @@ export default function DeviceControlScreen() {
       dragHoldTimeoutRef.current = null;
     }
   }, []);
+
+  const resetMouseHold = useCallback(() => {
+    clearDragHoldTimeout();
+    isDraggingRef.current = false;
+    pendingMouseMoveRef.current = { x: 0, y: 0 };
+    pendingScrollRef.current = 0;
+    twoFingerTapCandidateRef.current = null;
+    resetTouchpadTracking();
+  }, [clearDragHoldTimeout, resetTouchpadTracking]);
+  const { start: startMouseHold, release: releaseMouseHold } = useMouseHoldLease({
+    deviceId: device?.id,
+    deviceIp: device?.ip,
+    enabled: status === 'online' && !setupMessage,
+    onError: handleTouchpadCommandError,
+    onRelease: resetMouseHold,
+  });
+  cancelMouseHoldRef.current = releaseMouseHold;
 
   const determineTouchpadMode = useCallback((y: number): TouchpadMode => {
     void y;
@@ -651,47 +670,16 @@ export default function DeviceControlScreen() {
       return;
     }
 
-    isDraggingRef.current = true;
-    dragActivationPendingRef.current = true;
-    triggerHaptic('light');
-
-    void deviceService
-      .sendMouseButtonDown(device.id, device.ip, 'left')
-      .then(() => {
-        lastTouchpadCommandErrorRef.current = null;
-      })
-      .catch((error) => {
-        isDraggingRef.current = false;
-        handleTouchpadCommandError(error);
-      })
-      .finally(() => {
-        dragActivationPendingRef.current = false;
-      });
-  }, [device, handleTouchpadCommandError, setupMessage, status, triggerHaptic]);
+    if (startMouseHold()) {
+      isDraggingRef.current = true;
+      lastTouchpadCommandErrorRef.current = null;
+      triggerHaptic('light');
+    }
+  }, [device, setupMessage, startMouseHold, status, triggerHaptic]);
 
   const releaseDragGesture = useCallback(() => {
-    clearDragHoldTimeout();
-
-    if (!device || status !== 'online' || setupMessage) {
-      isDraggingRef.current = false;
-      dragActivationPendingRef.current = false;
-      return;
-    }
-
-    if (!isDraggingRef.current && !dragActivationPendingRef.current) {
-      return;
-    }
-
-    isDraggingRef.current = false;
-    dragActivationPendingRef.current = false;
-
-    void deviceService
-      .sendMouseButtonUp(device.id, device.ip, 'left')
-      .then(() => {
-        lastTouchpadCommandErrorRef.current = null;
-      })
-      .catch(handleTouchpadCommandError);
-  }, [clearDragHoldTimeout, device, handleTouchpadCommandError, setupMessage, status]);
+    releaseMouseHold();
+  }, [releaseMouseHold]);
 
   const finishTouchpadGesture = useCallback(() => {
     clearDragHoldTimeout();

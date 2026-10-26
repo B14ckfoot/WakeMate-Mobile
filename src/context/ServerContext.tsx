@@ -82,8 +82,10 @@ export const ServerProvider: React.FC<ServerProviderProps> = ({ children }) => {
       deviceService.getServerTlsFingerprint(),
     ]);
 
-    if (savedIp?.trim() === trimmedIp && savedPort) {
-      return { port: savedPort, tlsFingerprint };
+    // A saved certificate remains the identity when its IP changes. The TLS
+    // handshake, not an address string, decides whether this is the same PC.
+    if (tlsFingerprint || (savedIp?.trim() === trimmedIp && savedPort)) {
+      return { port: savedPort ?? 7778, tlsFingerprint };
     }
 
     return { port: DEFAULT_COMPANION_PORT, tlsFingerprint: null };

@@ -138,8 +138,8 @@ const pairingQrFailure = (
 
 /**
  * Parses only WakeMATE's structured, local QR contract. Contract v2 remains
- * valid for older companions and may omit TLS entirely. Contract v3 must
- * always carry a complete TLS pin so a current pairing can never downgrade
+ * valid for older companions only when it includes TLS. Both contracts must
+ * carry a complete TLS pin so a current pairing can never downgrade
  * to plaintext. URLs, bare tokens, foreign JSON, and ambiguous aliases are
  * intentionally rejected before any discovery, storage, or network work.
  */
@@ -255,10 +255,7 @@ export const parseStructuredPairingQr = (
     tlsPortField.value && tlsFingerprintField.value
   );
 
-  if (
-    (hasTlsMetadata && !hasCompleteTlsMetadata) ||
-    (version === 3 && !hasCompleteTlsMetadata)
-  ) {
+  if (!hasCompleteTlsMetadata) {
     return pairingQrFailure(
       'invalid_tls_metadata',
       'This QR code is missing a valid TLS port or certificate fingerprint. Regenerate it from the WakeMATE companion.'

@@ -38,8 +38,8 @@ jest.mock('axios', () => {
   };
 });
 
-// UDP discovery and the pinned-TLS bridge are native; nothing under test
-// reaches them, but they are imported at module scope.
+// UDP discovery is native and imported at module scope. Transport-focused
+// suites provide their own stub for the native pinned-HTTPS boundary.
 jest.mock('react-native-udp', () => ({
   __esModule: true,
   default: { createSocket: jest.fn() },

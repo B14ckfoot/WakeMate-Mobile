@@ -2,6 +2,33 @@
 
 WakeMate Mobile is the Expo/React Native app for waking, pairing, and remotely controlling your computers.
 
+## Secure companion connections
+
+Scan the current pairing QR code from the computer's WakeMATE tray icon to
+establish its certificate identity, then approve the request on that computer.
+All pairing, status details, wake relays, and remote controls require pinned
+HTTPS. HTTP is limited to public health discovery without credentials; direct
+phone Wake-on-LAN continues to work while the companion is offline.
+
+Older HTTP-only pairings require an updated Companion and a fresh QR scan.
+Missing or corrupt certificate pins block authenticated requests and show a
+re-pairing message. An unavailable keychain blocks requests until the phone can
+access secure storage. Changing a computer's IP keeps its original certificate
+pin; a different certificate always fails verification. Discovery cannot replace
+a pin obtained from the visual QR channel.
+
+Companion protocol 5 grants each phone only the permissions chosen on the
+desktop. An approved status/wake-only pairing is successful; commands outside
+that grant remain denied. Shared-token activation is available only over pinned
+HTTPS after an older companion explicitly reports a protocol below 5.
+
+During a trackpad drag, the phone renews its held-button lease every 500 ms,
+including while the finger is stationary. Down and up requests are serialized;
+leaving the screen, backgrounding the app, losing connectivity, or a command
+failure stops renewal and attempts release against the original computer. The
+protocol 5 companion also releases remote-held buttons after two seconds
+without successful input from their owner, covering a lost connection or app exit.
+
 ## What You Need
 
 - Node.js 20 or newer

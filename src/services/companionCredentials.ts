@@ -1,5 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
-import { normalizeTlsFingerprint } from './companionTransport';
+import {
+  normalizeTlsFingerprint,
+  SECURE_PAIRING_REQUIRED_MESSAGE,
+  SECURE_STORAGE_UNAVAILABLE_MESSAGE,
+} from './companionTransport';
 
 // Per-computer companion secrets.
 //
@@ -50,18 +54,20 @@ export type PendingDeviceEnrollment = {
 
 const assertSecureStoreAvailable = async (): Promise<void> => {
   if (!(await SecureStore.isAvailableAsync())) {
-    throw new Error('Secure credential storage is unavailable on this device.');
+    throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE);
   }
 };
 
 const readSecure = async (key: string): Promise<string | null> => {
-  if (!(await SecureStore.isAvailableAsync())) {
-    return null;
+  await assertSecureStoreAvailable();
+  try {
+    const value = await SecureStore.getItemAsync(key, SECURE_OPTIONS);
+    const trimmed = value?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    // A locked or inaccessible keychain is different from an absent pairing.
+    throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE);
   }
-
-  const value = await SecureStore.getItemAsync(key, SECURE_OPTIONS);
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
 };
 
 const deleteSecure = async (key: string): Promise<void> => {
@@ -187,10 +193,10 @@ export const getDeviceTlsFingerprint = async (deviceId: string): Promise<string 
   const stored = await readSecure(fingerprintKey(deviceId));
   const fingerprint = normalizeTlsFingerprint(stored);
 
-  // A stored value that no longer parses is worse than none: it would silently
-  // downgrade the connection to plain HTTP on the next request.
+  // Preserve corrupt bytes for recovery and fail closed. Returning null here
+  // used to convert a previously secured device into a plaintext connection.
   if (stored && !fingerprint) {
-    await deleteSecure(fingerprintKey(deviceId));
+    throw new Error(SECURE_PAIRING_REQUIRED_MESSAGE);
   }
 
   return fingerprint;
@@ -243,7 +249,11 @@ export const readLegacyCredentials = async (): Promise<{
     readSecure(LEGACY_FINGERPRINT_KEY),
   ]);
 
-  return { token, fingerprint: normalizeTlsFingerprint(storedFingerprint) };
+  const fingerprint = normalizeTlsFingerprint(storedFingerprint);
+  if (storedFingerprint && !fingerprint) {
+    throw new Error(SECURE_PAIRING_REQUIRED_MESSAGE);
+  }
+  return { token, fingerprint };
 };
 
 export const clearLegacyCredentials = async (): Promise<void> => {

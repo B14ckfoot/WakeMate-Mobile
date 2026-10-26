@@ -76,7 +76,7 @@ export default function EditDeviceScreen() {
       setHasPinnedCertificate(Boolean(fingerprint));
     } catch (error) {
       console.error('Error loading device:', error);
-      Alert.alert('Error', 'Failed to load device details');
+      Alert.alert('Error', error instanceof Error ? error.message : 'Failed to load device details');
     } finally {
       setIsLoading(false);
     }

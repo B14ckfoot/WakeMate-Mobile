@@ -202,6 +202,9 @@ it('pairs a valid v3 code and fills a missing MAC by exact IP', async () => {
       tlsFingerprint: scannedFingerprint,
     })
   );
+  expect(Alert.alert).toHaveBeenLastCalledWith(
+    'Device Saved', expect.stringContaining('permissions selected on the computer'), expect.any(Array)
+  );
 
   await unmountScanner(renderer);
 });

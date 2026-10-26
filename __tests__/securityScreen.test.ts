@@ -1,16 +1,17 @@
 // Covers the phone half of the Windows Security (Ctrl+Alt+Delete) command,
 // end to end: real deviceService, real command mapping, real transport, with
-// only the HTTP call itself stubbed. The point is that no combination of
+// only the native HTTPS call itself stubbed. The point is that no combination of
 // companion reply, HTTP status, or network failure can make the app report
 // success when the security screen did not open.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import { stubPinnedTransport } from '../test-support/pinnedTransport';
 
 import deviceService, { isSecureAttentionCombo } from '../src/services/deviceService';
 
-const mockedRequest = axios.request as unknown as jest.Mock;
+jest.mock('../modules/wakemate-tls', () => ({ requestPinnedHttps: jest.fn() }));
+
+const mockedRequest = jest.fn();
 
 const SERVER_IP = '10.0.0.19';
 const PAIRING_TOKEN = 'test-pairing-token';
@@ -42,10 +43,15 @@ const axiosFailure = (status: number | undefined, data?: unknown, code?: string)
 
 beforeEach(async () => {
   mockedRequest.mockReset();
+  stubPinnedTransport(mockedRequest);
   await AsyncStorage.clear();
-  await AsyncStorage.setItem('serverIp', SERVER_IP);
-  await SecureStore.deleteItemAsync('wakemate.companion.token.v1');
-  await deviceService.setServerToken(PAIRING_TOKEN);
+  await deviceService.saveDevices([{
+    id: 'device-1', name: 'Desk PC', ip: SERVER_IP, mac: '00:11:22:33:44:55',
+    wakeAddress: '10.0.0.255', wakePort: 9, apiPort: 7777, tlsPort: 7778,
+    status: 'online', type: 'wifi', platform: 'windows',
+  }]);
+  await deviceService.setDeviceCompanionToken('device-1', PAIRING_TOKEN);
+  await deviceService.setDeviceCompanionTlsFingerprint('device-1', 'ab'.repeat(32));
 });
 
 describe('sending the security-screen command', () => {
@@ -64,7 +70,7 @@ describe('sending the security-screen command', () => {
     expect(mockedRequest).toHaveBeenCalledTimes(1);
     const call = mockedRequest.mock.calls[0][0];
 
-    expect(call.url).toBe(`http://${SERVER_IP}:7777/v1/command`);
+    expect(call.url).toBe(`https://${SERVER_IP}:7778/v1/command`);
     expect(call.method).toBe('POST');
     expect(call.data).toEqual({ type: 'security_screen', fallback: 'lock' });
     expect(call.headers['x-wakemate-token']).toBe(PAIRING_TOKEN);
@@ -210,7 +216,7 @@ describe('classifying transport failures', () => {
   });
 
   it('reports an unpaired phone as unauthorized without calling the companion', async () => {
-    await deviceService.setServerToken('');
+    await deviceService.setDeviceCompanionToken('device-1', '');
 
     const outcome = await deviceService.sendSecurityScreen('device-1', SERVER_IP);
 

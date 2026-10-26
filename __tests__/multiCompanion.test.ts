@@ -4,7 +4,7 @@
 // so each saved computer must keep its own.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
+import { stubPinnedTransport } from '../test-support/pinnedTransport';
 
 import deviceService, { PAIRING_APPROVAL_TIMEOUT_MS } from '../src/services/deviceService';
 import {
@@ -13,7 +13,12 @@ import {
 } from '../src/services/companionCredentials';
 import { Device } from '../src/types/device';
 
-const mockedRequest = axios.request as unknown as jest.Mock;
+jest.mock('../modules/wakemate-tls', () => ({ requestPinnedHttps: jest.fn() }));
+
+const mockedRequest = jest.fn();
+const fingerprint = 'ab'.repeat(32);
+const pairPcB = (options: Parameters<typeof deviceService.pairDeviceFromQr>[1]) =>
+  deviceService.pairDeviceFromQr('pc-b', { tlsPort: 7778, tlsFingerprint: fingerprint, ...options });
 
 const PC_A: Device = {
   id: 'pc-a',
@@ -26,7 +31,7 @@ const PC_A: Device = {
   type: 'wifi',
   platform: 'windows',
   apiPort: 7777,
-  tlsPort: null,
+  tlsPort: 7778,
 };
 
 const PC_B: Device = {
@@ -50,10 +55,13 @@ const ok = (data: unknown = { ok: true, message: 'ok' }) => ({ status: 200, head
 beforeEach(async () => {
   mockedRequest.mockReset();
   mockedRequest.mockResolvedValue(ok());
+  stubPinnedTransport(mockedRequest);
   await AsyncStorage.clear();
   await deviceService.saveDevices([PC_A, PC_B]);
   await deviceService.setDeviceCompanionToken('pc-a', 'token-a');
   await deviceService.setDeviceCompanionToken('pc-b', 'token-b');
+  await deviceService.setDeviceCompanionTlsFingerprint('pc-a', fingerprint);
+  await deviceService.setDeviceCompanionTlsFingerprint('pc-b', fingerprint);
 });
 
 afterEach(async () => {
@@ -77,7 +85,7 @@ describe('keeping two computers independent', () => {
 
   it('pairing a second computer leaves the first one intact', async () => {
     // This is the reported bug, as a test.
-    await deviceService.pairDeviceFromQr('pc-b', {
+    await pairPcB({
       ip: PC_B.ip,
       token: 'fresh-token-b',
       apiPort: 7777,
@@ -92,10 +100,10 @@ describe('keeping two computers independent', () => {
   });
 
   it('uses each computer’s own port', async () => {
-    await deviceService.setDeviceCompanionConnection('pc-b', { apiPort: 8888 });
+    await deviceService.setDeviceCompanionConnection('pc-b', { tlsPort: 8888 });
 
     await deviceService.sendSleep('pc-a', PC_A.ip);
-    expect(mockedRequest.mock.calls[0][0].url).toContain(':7777');
+    expect(mockedRequest.mock.calls[0][0].url).toContain(':7778');
 
     await deviceService.sendSleep('pc-b', PC_B.ip);
     expect(mockedRequest.mock.calls[1][0].url).toContain(':8888');
@@ -185,7 +193,7 @@ describe('completing pairing in one scan', () => {
 
     jest.useFakeTimers();
     try {
-      const pairing = deviceService.pairDeviceFromQr('pc-b', {
+      const pairing = pairPcB({
         ip: PC_B.ip,
         token: 'qr-token',
         timeoutMs: 5000,
@@ -223,10 +231,13 @@ describe('completing pairing in one scan', () => {
       if (String(config.url).includes('/v1/pairing/status')) {
         return ok({ ok: true, data: { approval: 'approved', allow_input_commands: true } });
       }
+      if (String(config.url).includes('/v1/health')) {
+        return ok({ ok: true, data: { status: 'online', protocol_version: 2 } });
+      }
       return ok();
     });
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'legacy-token',
       timeoutMs: 5000,
@@ -243,7 +254,7 @@ describe('completing pairing in one scan', () => {
   it('rejects a malformed enrollment response instead of treating it as legacy', async () => {
     mockedRequest.mockResolvedValue(ok({ ok: true, data: { device_id: 'missing-token' } }));
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       timeoutMs: 5000,
@@ -258,6 +269,41 @@ describe('completing pairing in one scan', () => {
     ).toBe(false);
   });
 
+  it('accepts protocol 5 desktop approval without asking for input or power grants', async () => {
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        return ok({ ok: true, data: { device_id: 'least-grant-enrollment', device_token: 'least-grant-token' } });
+      }
+      if (String(config.url).includes('/v1/pairing/status')) {
+        return ok({ ok: true, data: {
+          approval: 'approved', allow_input_commands: false, allow_power_commands: false,
+          permissions: { status: true, wake: true, media: false, input: false, power: false },
+        } });
+      }
+      return ok();
+    });
+    const result = await pairPcB({ ip: PC_B.ip, token: 'least-grant-qr', timeoutMs: 50 });
+    expect(result.status).toBe('approved');
+    expect(await deviceService.getDeviceCompanionToken('pc-b')).toBe('least-grant-token');
+    expect(mockedRequest.mock.calls.some((call) => String(call[0].url).includes('/v1/pairing/activate'))).toBe(false);
+  });
+
+  it('does not use legacy activation for a missing protocol 5 enrollment endpoint', async () => {
+    mockedRequest.mockImplementation(async (config: any) => {
+      if (String(config.url).includes('/v1/pairing/enroll')) {
+        const missingRoute = new Error('missing endpoint') as Error & { isAxiosError: boolean; response: unknown };
+        missingRoute.isAxiosError = true;
+        missingRoute.response = { status: 404 };
+        throw missingRoute;
+      }
+      return ok({ ok: true, data: { status: 'online', protocol_version: 5 } });
+    });
+    const result = await pairPcB({ ip: PC_B.ip, token: 'protocol-five-qr', timeoutMs: 50 });
+    expect(result.status).toBe('failed');
+    expect(result.detail).toContain('secure device enrollment');
+    expect(mockedRequest.mock.calls.some((call) => String(call[0].url).includes('/v1/pairing/activate'))).toBe(false);
+  });
+
   it('keeps durable staging after a caller-shortened timeout', async () => {
     mockedRequest.mockImplementation(async (config: any) => {
       if (String(config.url).includes('/v1/pairing/enroll')) {
@@ -269,7 +315,7 @@ describe('completing pairing in one scan', () => {
       return ok();
     });
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       timeoutMs: 10,
@@ -304,7 +350,7 @@ describe('completing pairing in one scan', () => {
 
     jest.useFakeTimers();
     try {
-      const pairing = deviceService.pairDeviceFromQr('pc-b', {
+      const pairing = pairPcB({
         ip: PC_B.ip,
         token: 'qr-token',
       });
@@ -330,7 +376,7 @@ describe('completing pairing in one scan', () => {
       return ok();
     });
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       timeoutMs: 5000,
@@ -352,7 +398,7 @@ describe('completing pairing in one scan', () => {
       return ok();
     });
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       timeoutMs: 5000,
@@ -380,7 +426,7 @@ describe('completing pairing in one scan', () => {
       return ok();
     });
 
-    const result = await deviceService.pairDeviceFromQr('pc-b', {
+    const result = await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       timeoutMs: 5000,
@@ -642,7 +688,7 @@ describe('completing pairing in one scan', () => {
   });
 
   it('stores the scanned ports against that computer only', async () => {
-    await deviceService.pairDeviceFromQr('pc-b', {
+    await pairPcB({
       ip: PC_B.ip,
       token: 'qr-token',
       apiPort: 7777,
@@ -652,7 +698,7 @@ describe('completing pairing in one scan', () => {
 
     const devices = await deviceService.getDevices();
     expect(devices.find((device) => device.id === 'pc-b')?.tlsPort).toBe(7443);
-    expect(devices.find((device) => device.id === 'pc-a')?.tlsPort).toBeNull();
+    expect(devices.find((device) => device.id === 'pc-a')?.tlsPort).toBe(7778);
   });
 });
 

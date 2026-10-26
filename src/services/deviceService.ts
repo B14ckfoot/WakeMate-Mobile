@@ -18,6 +18,8 @@ import { reconcileFavoriteDevice } from './favoriteDevice';
 import {
   normalizeTlsFingerprint,
   requestCompanion,
+  SECURE_PAIRING_REQUIRED_MESSAGE,
+  SECURE_STORAGE_UNAVAILABLE_MESSAGE,
 } from './companionTransport';
 import {
   clearPendingDeviceEnrollment,
@@ -797,19 +799,21 @@ const readOrMigrateServerToken = async (): Promise<string | null> => {
 
 const readStoredTlsFingerprint = async (): Promise<string | null> => {
   if (!(await SecureStore.isAvailableAsync())) {
-    return null;
+    throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE);
   }
 
-  const storedValue = await SecureStore.getItemAsync(
-    SECURE_SERVER_TLS_FINGERPRINT_KEY,
-    SECURE_SERVER_TOKEN_OPTIONS
-  );
-  const fingerprint = normalizeTlsFingerprint(storedValue);
-  if (storedValue && !fingerprint) {
-    await SecureStore.deleteItemAsync(
+  let storedValue: string | null;
+  try {
+    storedValue = await SecureStore.getItemAsync(
       SECURE_SERVER_TLS_FINGERPRINT_KEY,
       SECURE_SERVER_TOKEN_OPTIONS
     );
+  } catch {
+    throw new Error(SECURE_STORAGE_UNAVAILABLE_MESSAGE);
+  }
+  const fingerprint = normalizeTlsFingerprint(storedValue);
+  if (storedValue && !fingerprint) {
+    throw new Error(SECURE_PAIRING_REQUIRED_MESSAGE);
   }
   return fingerprint;
 };
@@ -918,25 +922,30 @@ const resolveTargetEndpoint = async (
   if (device) {
     const targetIp = normalizeStoredValue(explicitIp) ?? device.ip;
     const fingerprint = await getDeviceTlsFingerprint(device.id);
-    // The pin belongs to the address it was scanned from. Talking to a
-    // different host on the same record must not reuse it.
-    const usableFingerprint = targetIp === device.ip ? fingerprint : null;
+    // The QR pin identifies the computer, not its current DHCP address. A new
+    // address must present this same certificate before it receives a token.
 
     if (explicitPort !== null && explicitPort !== undefined) {
       return {
         ip: targetIp,
         port: normalizeDiscoveredPort(explicitPort, DEFAULT_API_PORT),
-        tlsFingerprint: usableFingerprint,
+        tlsFingerprint: fingerprint,
       };
     }
 
     // A fingerprint means pinned HTTPS, which listens on the TLS port.
-    const preferredPort = usableFingerprint ? device.tlsPort ?? null : device.apiPort ?? null;
+    const preferredPort = fingerprint
+      ? device.tlsPort ?? DEFAULT_API_PORT + 1
+      : device.apiPort ?? DEFAULT_API_PORT;
     return {
       ip: targetIp,
       port: normalizeDiscoveredPort(preferredPort, DEFAULT_API_PORT),
-      tlsFingerprint: usableFingerprint,
+      tlsFingerprint: fingerprint,
     };
+  }
+
+  if (deviceId?.trim()) {
+    throw new Error('This computer is no longer saved. Add it again and scan its pairing QR code.');
   }
 
   const [storedIpValue, storedTlsFingerprint] = await Promise.all([
@@ -954,8 +963,7 @@ const resolveTargetEndpoint = async (
     return {
       ip: targetIp,
       port: normalizeDiscoveredPort(explicitPort, DEFAULT_API_PORT),
-      tlsFingerprint:
-        storedIp && storedIp === targetIp ? storedTlsFingerprint : null,
+      tlsFingerprint: storedTlsFingerprint,
     };
   }
 
@@ -963,11 +971,10 @@ const resolveTargetEndpoint = async (
   return {
     ip: targetIp,
     port: normalizeDiscoveredPort(
-      storedIp && storedIp === targetIp ? storedPort : null,
-      DEFAULT_API_PORT
+      storedPort,
+      storedTlsFingerprint ? DEFAULT_API_PORT + 1 : DEFAULT_API_PORT
     ),
-    tlsFingerprint:
-      storedIp && storedIp === targetIp ? storedTlsFingerprint : null,
+    tlsFingerprint: storedTlsFingerprint,
   };
 };
 
@@ -1353,6 +1360,7 @@ const requireServerToken = async (deviceId?: string | null): Promise<string> => 
     if (deviceToken) {
       return deviceToken;
     }
+    throw new Error(COMPANION_PAIRING_TOKEN_REQUIRED_MESSAGE);
   }
 
   const token = normalizeStoredValue(await deviceService.getServerToken());
@@ -1379,9 +1387,8 @@ const deviceService = {
       options.serverIp ? Promise.resolve(options.serverIp) : this.getServerAddress(),
       deviceId ? getPendingDeviceEnrollment(deviceId) : Promise.resolve(null),
       deviceId ? getDeviceToken(deviceId) : Promise.resolve(null),
-      // Fall back to the legacy shared token so an unmigrated setup still
-      // reports itself as paired.
-      this.getServerToken(),
+      // Globals belong only to an unmigrated setup, never another saved PC.
+      deviceId ? Promise.resolve(null) : this.getServerToken(),
     ]);
     const token = pendingEnrollment?.deviceToken ?? storedDeviceToken ?? legacyToken;
 
@@ -1493,24 +1500,17 @@ const deviceService = {
 
   async setServerConnection(ip: string, port?: number | null): Promise<void> {
     const trimmedIp = ip.trim();
-    const currentIp = normalizeStoredValue(await this.getServerAddress());
     const currentPort = await this.getServerPort();
     const resolvedPort =
       port !== null && port !== undefined
         ? normalizeDiscoveredPort(port, DEFAULT_API_PORT)
-        : normalizeDiscoveredPort(currentIp === trimmedIp ? currentPort : null, DEFAULT_API_PORT);
+        : normalizeDiscoveredPort(currentPort, DEFAULT_API_PORT);
 
     try {
       const updates: Promise<void>[] = [
         persistStringSetting(SERVER_IP_KEY, trimmedIp),
         persistNumberSetting(SERVER_PORT_KEY, resolvedPort),
       ];
-      if (currentIp !== trimmedIp) {
-        const currentFingerprint = await readStoredTlsFingerprint();
-        if (currentFingerprint) {
-          updates.push(persistTlsFingerprint(null));
-        }
-      }
       await Promise.all(updates);
     } catch (error) {
       console.error('Error setting companion connection:', error);
@@ -1519,12 +1519,7 @@ const deviceService = {
   },
 
   async getServerTlsFingerprint(): Promise<string | null> {
-    try {
-      return await readStoredTlsFingerprint();
-    } catch (error) {
-      console.error('Error getting companion TLS fingerprint:', error);
-      return null;
-    }
+    return readStoredTlsFingerprint();
   },
 
   async setServerTlsFingerprint(
@@ -1673,6 +1668,14 @@ const deviceService = {
   }> {
     const timeoutMs = options.timeoutMs ?? PAIRING_APPROVAL_TIMEOUT_MS;
     const fingerprint = normalizeTlsFingerprint(options.tlsFingerprint);
+    if (
+      !fingerprint ||
+      !Number.isInteger(options.tlsPort) ||
+      (options.tlsPort ?? 0) < 1 ||
+      (options.tlsPort ?? 0) > 65535
+    ) {
+      return { status: 'failed', detail: SECURE_PAIRING_REQUIRED_MESSAGE };
+    }
 
     // Persist the connection first so every later call resolves to this
     // computer, not whichever one was paired last.
@@ -1915,12 +1918,12 @@ const deviceService = {
     }
   },
 
-  async getCompanionHealth(serverIp?: string): Promise<any> {
+  async getCompanionHealth(serverIp?: string, localDeviceId?: string | null): Promise<any> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
     const response = await requestCompanion<any>({
       ip: targetIp,
       port: targetPort,
@@ -1935,13 +1938,13 @@ const deviceService = {
     return response.data;
   },
 
-  async getCompanionInfo(serverIp?: string): Promise<any> {
+  async getCompanionInfo(serverIp?: string, localDeviceId?: string | null): Promise<any> {
     const {
       ip: targetIp,
       port: targetPort,
       tlsFingerprint,
-    } = await resolveTargetEndpoint(serverIp);
-    const token = normalizeStoredValue(await this.getServerToken());
+    } = await resolveTargetEndpoint(serverIp, null, localDeviceId);
+    const token = await requireServerToken(localDeviceId);
     try {
       const response = await requestCompanion<any>({
         ip: targetIp,
@@ -1951,7 +1954,7 @@ const deviceService = {
         tlsFingerprint,
         headers: {
           'Cache-Control': 'no-cache',
-          ...(token ? { [AUTH_HEADER]: token } : {}),
+          [AUTH_HEADER]: token,
         },
       });
 
@@ -2206,8 +2209,13 @@ const deviceService = {
       return { deviceId, deviceToken };
     } catch (error) {
       if (isAxiosError(error) && error.response?.status === 404) {
-        // Older companion without per-device enrollment.
-        return null;
+        // A missing route alone does not authorize shared-token activation.
+        // Protocol 5 requires per-device enrollment and explicit grants.
+        const health = await this.getCompanionHealthInfo(targetIp, localDeviceId);
+        if (health.protocolVersion !== null && health.protocolVersion < 5) {
+          return null;
+        }
+        throw new Error('This Companion requires secure device enrollment. Update it and scan a new pairing QR code.');
       }
       // The orchestration layer needs the HTTP status to distinguish a
       // retryable 429 from unsupported legacy companions. It normalizes the
@@ -2331,14 +2339,14 @@ const deviceService = {
     } = await resolveTargetEndpoint(targetIp, null, deviceId);
 
     if (command === 'get_status') {
-      return this.getCompanionInfo(serverIp);
+      return this.getCompanionInfo(serverIp, deviceId);
     }
 
     if (command === 'wake') {
       return this.sendWakeRequest(String(params.mac ?? ''), serverIp, {
         wakeAddress: String(params.wakeAddress ?? ''),
         wakePort: params.wakePort,
-      });
+      }, deviceId);
     }
 
     const token = await requireServerToken(deviceId);
